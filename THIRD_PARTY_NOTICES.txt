@@ -3,6 +3,11 @@
 钉钉：https://gw.alicdn.com/imgextra/i3/O1CN014ZbI6ZTEhdC0ttN2_!!6000000003783-2-tps-444-444.png（官网高清图标）
 企业微信：https://wwcdn.weixin.qq.com/node/wwnl/wwnl/style/images/officialImages$h6afc438.svg（官网 LogoSingle 矢量图标）
 
+额度渠道标识
+华为云（CodeArts）：https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/huawei.svg（simple-icons 官方 Huawei 标识，CC0 1.0）
+华为、HUAWEI 及相关标识为华为技术有限公司的商标，此处仅用于指示对应的服务来源。
+WorkBuddy、Magpie 图标为按功能含义自绘的示意图形，未使用第三方素材。
+
 TokenBar
 额度接口映射、凭据文件结构及 Windows 代理处理参考本机 TokenBar 项目。
 

@@ -10,6 +10,8 @@ pub(crate) mod gemini;
 mod claude;
 #[path="native_auth.rs"]
 mod native_auth;
+#[path="magpie_quota.rs"]
+pub(crate) mod magpie;
 
 pub struct Discovery {pub added:usize,pub notes:Vec<String>}
 impl Discovery {
@@ -20,25 +22,35 @@ impl Discovery {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Provider { #[default] Codex, Claude, Kimi, GrokBot, Gemini }
+pub enum Provider { #[default] Codex, Claude, Kimi, GrokBot, Gemini, Magpie }
 impl Provider {
-    pub const ALL: [Self; 5] = [Self::Codex, Self::Claude, Self::Kimi, Self::GrokBot, Self::Gemini];
-    pub fn name(self) -> &'static str { match self {Self::Codex=>"Codex",Self::Claude=>"Claude",Self::Kimi=>"Kimi",Self::GrokBot=>"Grok Bot",Self::Gemini=>"Gemini"} }
+    pub const ALL: [Self; 6] = [Self::Codex, Self::Claude, Self::Kimi, Self::GrokBot, Self::Gemini, Self::Magpie];
+    /// 下拉菜单只列出可以手动添加的渠道；Magpie 由网关下发，单独处理。
+    pub const NATIVE: [Self; 5] = [Self::Codex, Self::Claude, Self::Kimi, Self::GrokBot, Self::Gemini];
+    pub fn name(self) -> &'static str { match self {Self::Codex=>"Codex",Self::Claude=>"Claude",Self::Kimi=>"Kimi",Self::GrokBot=>"Grok Bot",Self::Gemini=>"Gemini",Self::Magpie=>"Magpie"} }
     fn parse(s: &str) -> Option<Self> {if s.eq_ignore_ascii_case("grokbot"){return Some(Self::GrokBot);}Self::ALL.into_iter().find(|p|p.name().eq_ignore_ascii_case(s))}
 }
+/// Magpie 里的一个渠道，例如 WorkBuddy、CodeArts。渠道由网关下发，岛内不写死。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Channel { pub id:String, pub name:String }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Accent { #[default] Brand, Violet, Orange, Blue, Cyan, Pink, Gold, Green }
+pub enum Accent { #[default] Brand, Violet, Orange, Blue, Cyan, Pink, Gold, Green, Red }
 impl Accent {
-    pub const ALL:[Self;8]=[Self::Brand,Self::Violet,Self::Orange,Self::Blue,Self::Cyan,Self::Pink,Self::Gold,Self::Green];
-    pub fn key(self)->&'static str{match self{Self::Brand=>"brand",Self::Violet=>"violet",Self::Orange=>"orange",Self::Blue=>"blue",Self::Cyan=>"cyan",Self::Pink=>"pink",Self::Gold=>"gold",Self::Green=>"green"}}
-    pub fn label(self)->&'static str{match self{Self::Brand=>"跟随厂商",Self::Violet=>"蓝紫",Self::Orange=>"暖橙",Self::Blue=>"湛蓝",Self::Cyan=>"青蓝",Self::Pink=>"玫红",Self::Gold=>"金黄",Self::Green=>"翠绿"}}
+    pub const ALL:[Self;9]=[Self::Brand,Self::Violet,Self::Orange,Self::Blue,Self::Cyan,Self::Pink,Self::Gold,Self::Green,Self::Red];
+    pub fn key(self)->&'static str{match self{Self::Brand=>"brand",Self::Violet=>"violet",Self::Orange=>"orange",Self::Blue=>"blue",Self::Cyan=>"cyan",Self::Pink=>"pink",Self::Gold=>"gold",Self::Green=>"green",Self::Red=>"red"}}
+    pub fn label(self)->&'static str{match self{Self::Brand=>"跟随厂商",Self::Violet=>"蓝紫",Self::Orange=>"暖橙",Self::Blue=>"湛蓝",Self::Cyan=>"青蓝",Self::Pink=>"玫红",Self::Gold=>"金黄",Self::Green=>"翠绿",Self::Red=>"赤红"}}
     fn parse(key:&str)->Self{Self::ALL.into_iter().find(|c|c.key()==key).unwrap_or_default()}
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Account {pub id:String, pub provider:Provider, pub alias:String, pub source:PathBuf, pub slot:Option<String>, pub enabled:bool, pub pinned:bool}
+pub struct Account {pub id:String, pub provider:Provider, pub alias:String, pub source:PathBuf, pub slot:Option<String>, pub enabled:bool, pub pinned:bool, pub channel:Option<Channel>}
+impl Account {
+    /// 分组与配色都以渠道为单位：Magpie 账号按网关渠道，其余按厂商。
+    pub fn channel_id(&self)->&str{self.channel.as_ref().map(|c|c.id.as_str()).unwrap_or_else(||self.provider.name())}
+    pub fn channel_name(&self)->&str{self.channel.as_ref().map(|c|c.name.as_str()).unwrap_or_else(||self.provider.name())}
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Config {pub enabled:bool, pub compact:bool, pub selected:String, pub accounts:Vec<Account>, pub colors:HashMap<String,Accent>}
-impl Default for Config {fn default()->Self {Self{enabled:true,compact:true,selected:String::new(),accounts:vec![],colors:HashMap::new()}}}
+pub struct Config {pub enabled:bool, pub compact:bool, pub selected:String, pub accounts:Vec<Account>, pub colors:HashMap<String,Accent>, pub hidden:Vec<String>}
+impl Default for Config {fn default()->Self {Self{enabled:true,compact:true,selected:String::new(),accounts:vec![],colors:HashMap::new(),hidden:vec![]}}}
 impl Config {
     pub fn load()->Self {
         let path=crate::model::config_dir().join("ai-quota.json");
@@ -47,17 +59,20 @@ impl Config {
     }
     fn from_json(v:&Value)->Self {
         let accounts=v["accounts"].as_array().into_iter().flatten().filter_map(|a|Some(Account{
-            id:a["id"].as_str()?.into(),provider:Provider::parse(a["provider"].as_str()?)?,alias:a["alias"].as_str()?.into(),source:PathBuf::from(a["source"].as_str()?),slot:a["slot"].as_str().map(str::to_owned),enabled:a["enabled"].as_bool().unwrap_or(true),pinned:a["pinned"].as_bool().unwrap_or(false)
+            id:a["id"].as_str()?.into(),provider:Provider::parse(a["provider"].as_str()?)?,alias:a["alias"].as_str()?.into(),source:PathBuf::from(a["source"].as_str()?),slot:a["slot"].as_str().map(str::to_owned),enabled:a["enabled"].as_bool().unwrap_or(true),pinned:a["pinned"].as_bool().unwrap_or(false),
+            channel:a["channel"]["id"].as_str().map(|id|Channel{id:id.to_owned(),name:a["channel"]["name"].as_str().unwrap_or(id).to_owned()}),
         })).collect();
         let colors=v["colors"].as_object().into_iter().flatten().filter_map(|(id,value)|{let color=Accent::parse(value.as_str()?);(color!=Accent::Brand).then(||(id.clone(),color))}).collect();
-        Self{enabled:v["enabled"].as_bool().unwrap_or(true),compact:v["compact"].as_bool().unwrap_or(true),selected:v["selected"].as_str().unwrap_or_default().into(),accounts,colors}
+        let hidden=v["hidden_channels"].as_array().into_iter().flatten().filter_map(|key|key.as_str().map(str::to_owned)).collect();
+        Self{enabled:v["enabled"].as_bool().unwrap_or(true),compact:v["compact"].as_bool().unwrap_or(true),selected:v["selected"].as_str().unwrap_or_default().into(),accounts,colors,hidden}
     }
-    fn json(&self)->Value {let colors:serde_json::Map<String,Value>=self.colors.iter().map(|(id,color)|(id.clone(),json!(color.key()))).collect();json!({"enabled":self.enabled,"compact":self.compact,"selected":self.selected,"colors":colors,"accounts":self.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider.name(),"alias":a.alias,"source":a.source,"slot":a.slot,"enabled":a.enabled,"pinned":a.pinned})).collect::<Vec<_>>()})}
+    fn json(&self)->Value {let colors:serde_json::Map<String,Value>=self.colors.iter().map(|(id,color)|(id.clone(),json!(color.key()))).collect();json!({"enabled":self.enabled,"compact":self.compact,"selected":self.selected,"colors":colors,"hidden_channels":self.hidden,"accounts":self.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider.name(),"alias":a.alias,"source":a.source,"slot":a.slot,"enabled":a.enabled,"pinned":a.pinned,"channel":a.channel.as_ref().map(|c|json!({"id":c.id,"name":c.name}))})).collect::<Vec<_>>()})}
     pub fn save(&self) {
         let dir=crate::model::config_dir();let _=fs::create_dir_all(&dir);
         if let Ok(raw)=serde_json::to_vec_pretty(&self.json()){let _=crate::model::atomic_write(&dir.join("ai-quota.json"),&raw);}
     }
     pub fn add(&mut self,provider:Provider,alias:String,source:PathBuf)->Result<(),String>{
+        if provider==Provider::Magpie{return Err("Magpie 渠道的账号请用「从 Magpie 读取」添加".into());}
         if provider==Provider::Gemini{return Err("请使用浏览器或 Cookie 连接 Gemini 网页账号".into());}
         if provider==Provider::GrokBot{return self.import_grok(&source,&alias).map(|_|());}
         if provider==Provider::Claude&&claude::is_desktop(&source){return self.import_claude(&source,&alias).map(|_|());}
@@ -70,7 +85,7 @@ impl Config {
         let alias=if alias.trim().is_empty(){format!("{} · 账号 {}",provider.name(),next)}else{alias.trim().to_owned()};
         let id=format!("{}-{}",provider.name(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
         let pinned=self.accounts.is_empty();if pinned{self.selected=id.clone();}
-        self.accounts.push(Account{id,provider,alias,source:path,slot:None,enabled:true,pinned});Ok(())
+        self.accounts.push(Account{id,provider,alias,source:path,slot:None,enabled:true,pinned,channel:None});Ok(())
     }
     pub(crate) fn connect_grok(&mut self,slot:String,alias:String){
         if let Some(a)=self.accounts.iter_mut().find(|a|a.provider==Provider::GrokBot && a.slot.as_deref()==Some(&slot)){
@@ -78,14 +93,14 @@ impl Config {
         }
         let id=format!("GrokBot-{slot}");let pinned=self.pinned_indices().len()<3;
         let alias=if alias.trim().is_empty(){format!("Grok Bot · 账号 {}",self.accounts.iter().filter(|a|a.provider==Provider::GrokBot).count()+1)}else{alias};
-        self.selected=id.clone();self.accounts.push(Account{id,provider:Provider::GrokBot,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned});
+        self.selected=id.clone();self.accounts.push(Account{id,provider:Provider::GrokBot,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned,channel:None});
     }
     pub(crate) fn connect_gemini(&mut self,slot:String,alias:String)->String{
         if let Some(a)=self.accounts.iter_mut().find(|a|a.provider==Provider::Gemini && a.slot.as_deref()==Some(&slot)){
             a.enabled=true;if !alias.trim().is_empty(){a.alias=alias;}self.selected=a.id.clone();return a.id.clone();
         }
         let id=format!("Gemini-{slot}");let pinned=self.pinned_indices().len()<3;
-        self.selected=id.clone();self.accounts.push(Account{id:id.clone(),provider:Provider::Gemini,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned});id
+        self.selected=id.clone();self.accounts.push(Account{id:id.clone(),provider:Provider::Gemini,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned,channel:None});id
     }
     pub(crate) fn import_grok(&mut self,path:&Path,alias:&str)->Result<usize,String>{
         let profiles=grok::profiles(path)?;let path=fs::canonicalize(path).unwrap_or_else(|_|path.to_owned());let mut added=0;
@@ -93,7 +108,7 @@ impl Config {
             if self.accounts.iter().any(|a|a.provider==Provider::GrokBot && a.slot.as_deref()==Some(&profile.slot)){continue;}
             let id=format!("GrokBot-{}",profile.slot);let pinned=self.pinned_indices().len()<3;if self.accounts.is_empty(){self.selected=id.clone();}
             let label=if alias.trim().is_empty(){profile.label}else{format!("{alias} · {}",added+1)};
-            self.accounts.push(Account{id,provider:Provider::GrokBot,alias:label,source:path.clone(),slot:Some(profile.slot),enabled:true,pinned});added+=1;
+            self.accounts.push(Account{id,provider:Provider::GrokBot,alias:label,source:path.clone(),slot:Some(profile.slot),enabled:true,pinned,channel:None});added+=1;
         }
         Ok(added)
     }
@@ -105,10 +120,39 @@ impl Config {
             }
             let id=format!("ClaudeDesktop-{}",profile.slot);let pinned=self.accounts.is_empty();if pinned{self.selected=id.clone();}
             let label=if alias.trim().is_empty(){profile.label}else{alias.trim().to_owned()};
-            self.accounts.push(Account{id,provider:Provider::Claude,alias:label,source:path.clone(),slot:Some(profile.slot),enabled:true,pinned});added+=1;
+            self.accounts.push(Account{id,provider:Provider::Claude,alias:label,source:path.clone(),slot:Some(profile.slot),enabled:true,pinned,channel:None});added+=1;
         }
         Ok(added)
     }
+    /// Magpie 账号以「渠道 + 网关用户」为身份，重复读取不会产生新账号。
+    pub(crate) fn connect_magpie(&mut self,channel:&Channel,user:&str,alias:&str)->(String,bool){
+        let id=format!("Magpie/{}/{}",channel.id,user);
+        if let Some(account)=self.accounts.iter_mut().find(|a|a.id==id){
+            account.channel=Some(channel.clone());account.enabled=true;
+            if !alias.trim().is_empty(){account.alias=alias.trim().to_owned();}
+            return(id,false);
+        }
+        let pinned=self.pinned_indices().len()<3;
+        let alias=if alias.trim().is_empty(){user.to_owned()}else{alias.trim().to_owned()};
+        self.accounts.push(Account{id:id.clone(),provider:Provider::Magpie,alias,source:PathBuf::new(),slot:Some(user.to_owned()),enabled:true,pinned,channel:Some(channel.clone())});
+        if self.selected.is_empty(){self.selected=id.clone();}
+        (id,true)
+    }
+    /// 读取网关上的全部渠道与账号；只读，不登录、不保存凭据。
+    pub fn read_magpie(&mut self)->Result<usize,String>{
+        let entries=magpie::scan()?;let mut added=0;
+        for entry in entries{let(_,is_new)=self.connect_magpie(&entry.channel,&entry.user,&entry.alias);if is_new{added+=1;}}
+        Ok(added)
+    }
+    /// 渠道开关只影响「刘海与额度页是否展示」，账号本身和登录状态都保留。
+    pub fn channel_shown(&self,account:&Account)->bool{!self.hidden.iter().any(|key|key==account.channel_id())}
+    pub fn set_channel(&mut self,key:&str,shown:bool){self.hidden.retain(|saved|saved!=key);if !shown{self.hidden.push(key.to_owned());}}
+    pub fn channels(&self)->Vec<(String,String)>{
+        let mut list:Vec<(String,String)>=Vec::new();
+        for account in &self.accounts{let id=account.channel_id().to_owned();if !list.iter().any(|(saved,_)|*saved==id){list.push((id,account.channel_name().to_owned()));}}
+        list
+    }
+    pub fn visible_indices(&self)->Vec<usize>{self.accounts.iter().enumerate().filter_map(|(i,a)|(a.enabled&&self.channel_shown(a)).then_some(i)).collect()}
     pub fn discover(&mut self)->Discovery {
         let home=std::env::var_os("USERPROFILE").or_else(||std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_default();
         let mut candidates=vec![(Provider::Codex,home.join(".codex/auth.json")),(Provider::Claude,home.join(".claude/.credentials.json")),(Provider::Kimi,home.join(".kimi/credentials/kimi-code.json")),(Provider::Kimi,home.join(".kimi-code/credentials/kimi-code.json"))];
@@ -124,6 +168,8 @@ impl Config {
             }
         }
         if let Some(path)=grok::native_path(){if let Err(error)=self.import_grok(&path,""){notes.push(error);}}
+        // 没装或没开 Magpie 是常态，不当成识别失败提示出来。
+        if let Err(error)=self.read_magpie(){if error!=magpie::OFFLINE{notes.push(error);}}
         notes.sort();notes.dedup();Discovery{added:self.accounts.len()-before,notes}
     }
     fn discover_files(&mut self,candidates:&[(Provider,PathBuf)])->Vec<String>{
@@ -140,25 +186,26 @@ impl Config {
         notes
     }
     pub fn selected_index(&self)->Option<usize>{self.accounts.iter().position(|a|a.id==self.selected && a.enabled).or_else(||self.accounts.iter().position(|a|a.enabled))}
-    pub fn pinned_indices(&self)->Vec<usize>{self.accounts.iter().enumerate().filter_map(|(i,a)|(a.enabled && a.pinned).then_some(i)).collect()}
+    pub fn pinned_indices(&self)->Vec<usize>{self.accounts.iter().enumerate().filter_map(|(i,a)|(a.enabled && a.pinned && self.channel_shown(a)).then_some(i)).collect()}
 }
-#[derive(Clone, Debug, PartialEq)]
-pub struct Window {pub label:String,pub seconds:Option<i64>,pub remaining:f32,pub reset:Option<i64>}
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Window {pub label:String,pub seconds:Option<i64>,pub remaining:f32,pub reset:Option<i64>,pub caption:Option<String>}
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {pub plan:String,pub windows:Vec<Window>,pub extra:Vec<Window>,pub at:i64}
 impl Snapshot {
     pub fn rings(&self)->Vec<&Window>{let mut all:Vec<_>=self.windows.iter().collect();all.sort_by_key(|w|w.seconds.unwrap_or(i64::MAX));all.truncate(2);all}
 }
 fn number(v:&Value)->Option<f64>{v.as_f64().or_else(||v.as_str()?.parse().ok()).filter(|n|n.is_finite())}
-fn reset(v:&Value)->Option<i64>{v.as_i64().filter(|n|*n>0).or_else(||chrono::DateTime::parse_from_rfc3339(v.as_str()?).ok().map(|d|d.timestamp()))}
+pub(super) fn reset(v:&Value)->Option<i64>{v.as_i64().filter(|n|*n>0).or_else(||chrono::DateTime::parse_from_rfc3339(v.as_str()?).ok().map(|d|d.timestamp()))}
 fn cadence(seconds:Option<i64>)->String{match seconds{Some(18000)=>"5 小时".into(),Some(604800)=>"本周".into(),Some(86400)=>"今日".into(),Some(s)if s>0 && s%86400==0=>format!("{} 天",s/86400),Some(s)if s>0 && s%3600==0=>format!("{} 小时",s/3600),Some(s)if s>0=>format!("{} 分钟",s/60),_=>"额度周期".into()}}
 fn codex_window(v:&Value)->Option<Window>{
     let used=number(&v["used_percent"])?;let seconds=v["limit_window_seconds"].as_i64().filter(|s|*s>0);
-    Some(Window{label:cadence(seconds),seconds,remaining:(100.0-used).clamp(0.0,100.0) as f32,reset:reset(&v["reset_at"])})
+    Some(Window{label:cadence(seconds),seconds,remaining:(100.0-used).clamp(0.0,100.0) as f32,reset:reset(&v["reset_at"]),caption:None})
 }
 pub fn parse(provider:Provider,v:&Value)->Result<Snapshot,String>{
     if provider==Provider::GrokBot{return grok::parse(v);}
     if provider==Provider::Gemini{return gemini::parse(v);}
+    if provider==Provider::Magpie{return Err("Magpie 额度由本地网关提供".into());}
     let mut s=Snapshot{plan:v["plan_type"].as_str().unwrap_or_default().into(),at:chrono::Utc::now().timestamp(),..Default::default()};
     match provider {
         Provider::Codex=>{
@@ -169,14 +216,14 @@ pub fn parse(provider:Provider,v:&Value)->Result<Snapshot,String>{
             }
         }
         Provider::Claude=>{
-            for(key,seconds)in [("five_hour",18000),("seven_day",604800)]{if let Some(used)=number(&v[key]["utilization"]){s.windows.push(Window{label:cadence(Some(seconds)),seconds:Some(seconds),remaining:(100.0-used).clamp(0.0,100.0) as f32,reset:reset(&v[key]["resets_at"])});}}
+            for(key,seconds)in [("five_hour",18000),("seven_day",604800)]{if let Some(used)=number(&v[key]["utilization"]){s.windows.push(Window{label:cadence(Some(seconds)),seconds:Some(seconds),remaining:(100.0-used).clamp(0.0,100.0) as f32,reset:reset(&v[key]["resets_at"]),caption:None});}}
         }
         Provider::Kimi=>{
-            let section=|v:&Value,seconds:Option<i64>|->Option<Window>{let limit=number(&v["limit"])?;if limit<=0.0{return None;}let remaining=number(&v["remaining"]).or_else(||Some(limit-number(&v["used"])?))?;Some(Window{label:cadence(seconds),seconds,remaining:(remaining/limit*100.0).clamp(0.0,100.0) as f32,reset:reset(&v["resetTime"])})};
+            let section=|v:&Value,seconds:Option<i64>|->Option<Window>{let limit=number(&v["limit"])?;if limit<=0.0{return None;}let remaining=number(&v["remaining"]).or_else(||Some(limit-number(&v["used"])?))?;Some(Window{label:cadence(seconds),seconds,remaining:(remaining/limit*100.0).clamp(0.0,100.0) as f32,reset:reset(&v["resetTime"]),caption:None})};
             if let Some(w)=section(&v["usage"],Some(604800)){s.windows.push(w);}
             for limit in v["limits"].as_array().into_iter().flatten(){let duration=limit["window"]["duration"].as_i64();let unit=limit["window"]["timeUnit"].as_str().unwrap_or_default();let factor=match unit{"TIME_UNIT_MINUTE"=>Some(60),"TIME_UNIT_HOUR"=>Some(3600),"TIME_UNIT_DAY"=>Some(86400),"TIME_UNIT_SECOND"=>Some(1),_=>None};let seconds=duration.zip(factor).and_then(|(d,f)|d.checked_mul(f));if let Some(w)=section(&limit["detail"],seconds){if !s.windows.iter().any(|old|old.seconds==w.seconds){s.windows.push(w);}}}
         }
-        Provider::GrokBot|Provider::Gemini=>unreachable!(),
+        Provider::GrokBot|Provider::Gemini|Provider::Magpie=>unreachable!(),
     }
     if s.windows.is_empty(){return Err("服务未提供周期额度，暂不绘制进度".into());}
     s.windows.sort_by_key(|w|w.seconds.unwrap_or(i64::MAX));Ok(s)
@@ -194,7 +241,7 @@ fn account_credentials(account:&Account)->Result<Credential,String>{
 fn credentials(provider:Provider,path:&Path)->Result<Credential,String>{
     let root=login_json(path)?;
     let v=if provider==Provider::Codex{root.get("auth_json").unwrap_or(&root)}else{&root};
-    let token=match provider{Provider::Codex=>v.pointer("/tokens/access_token").or_else(||v.get("access_token")),Provider::Claude=>v.pointer("/claudeAiOauth/accessToken"),Provider::Kimi=>v.get("access_token"),Provider::GrokBot|Provider::Gemini=>None}.and_then(Value::as_str).filter(|s|!s.trim().is_empty()).ok_or("未找到订阅账号的登录凭据，请选择对应工具的登录文件")?.to_owned();
+    let token=match provider{Provider::Codex=>v.pointer("/tokens/access_token").or_else(||v.get("access_token")),Provider::Claude=>v.pointer("/claudeAiOauth/accessToken"),Provider::Kimi=>v.get("access_token"),Provider::GrokBot|Provider::Gemini|Provider::Magpie=>None}.and_then(Value::as_str).filter(|s|!s.trim().is_empty()).ok_or("未找到订阅账号的登录凭据，请选择对应工具的登录文件")?.to_owned();
     let claims=token.split('.').nth(1).and_then(|b|base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b).ok()).and_then(|b|serde_json::from_slice::<Value>(&b).ok()).unwrap_or(Value::Null);
     let account_id=v.pointer("/tokens/account_id").or_else(||v.get("account_id")).and_then(Value::as_str).or_else(||claims.pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id").and_then(Value::as_str)).filter(|s|!s.is_empty()).map(str::to_owned);
     let identity=match provider{
@@ -242,8 +289,9 @@ fn http_agent()->ureq::Agent{
 fn fetch(agent:&ureq::Agent,account:&Account)->Result<Snapshot,(String,u64)>{
     if account.provider==Provider::GrokBot{return grok::fetch(agent,account);}
     if account.provider==Provider::Gemini{return gemini::fetch(agent,account);}
+    if account.provider==Provider::Magpie{return magpie::fetch(account);}
     let auth=account_credentials(account).map_err(|e|(e,0))?;
-    let url=match account.provider{Provider::Codex=>"https://chatgpt.com/backend-api/wham/usage",Provider::Claude=>"https://api.anthropic.com/api/oauth/usage",Provider::Kimi=>"https://api.kimi.com/coding/v1/usages",Provider::GrokBot|Provider::Gemini=>unreachable!()};
+    let url=match account.provider{Provider::Codex=>"https://chatgpt.com/backend-api/wham/usage",Provider::Claude=>"https://api.anthropic.com/api/oauth/usage",Provider::Kimi=>"https://api.kimi.com/coding/v1/usages",Provider::GrokBot|Provider::Gemini|Provider::Magpie=>unreachable!()};
     let mut req=agent.get(url).set("Authorization",&format!("Bearer {}",auth.token)).set("Accept","application/json").set("User-Agent","codex-cli/Daozai");
     if account.provider==Provider::Codex{if let Some(id)=&auth.account_id{req=req.set("ChatGPT-Account-Id",id);}}
     if account.provider==Provider::Claude{req=req.set("anthropic-beta","oauth-2025-04-20");}
@@ -336,5 +384,31 @@ fn fetch(agent:&ureq::Agent,account:&Account)->Result<Snapshot,(String,u64)>{
     #[test] fn primary_can_be_weekly_and_missing_is_not_unlimited(){let s=parse(Provider::Codex,&json!({"rate_limit":{"primary_window":{"used_percent":100,"limit_window_seconds":604800}}})).unwrap();assert_eq!(s.rings()[0].label,"本周");assert_eq!(s.rings()[0].remaining,0.0);assert!(parse(Provider::Codex,&json!({"rate_limit":{}})).is_err());assert!(parse(Provider::Codex,&json!({"rate_limit":{"primary_window":{"reset_at":1900000000}}})).is_err());}
     #[test] fn extra_codex_buckets_do_not_replace_main_windows(){let s=parse(Provider::Codex,&json!({"rate_limit":{"secondary_window":{"used_percent":20,"limit_window_seconds":604800}},"additional_rate_limits":[{"limit_name":"reserve","rate_limit":{"primary_window":{"used_percent":80,"limit_window_seconds":604800}}}]})).unwrap();assert_eq!(s.windows.len(),1);assert_eq!(s.extra[0].remaining,20.0);assert_eq!(s.windows[0].remaining,80.0);}
     #[test] fn claude_null_window_and_kimi_string_numbers(){let c=parse(Provider::Claude,&json!({"five_hour":null,"seven_day":{"utilization":60,"resets_at":"2030-01-01T12:00:00Z"}})).unwrap();assert_eq!(c.rings().len(),1);assert!(c.windows[0].reset.is_some());let k=parse(Provider::Kimi,&json!({"usage":{"limit":"100","remaining":"70"},"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"20","used":"5"}}]})).unwrap();assert_eq!(k.rings().len(),2);assert_eq!(k.rings()[0].remaining,75.0);}
-    #[test] fn multi_account_config_keeps_sources_and_selection_separate(){let mut c=Config::default();for n in 1..=2{c.accounts.push(Account{id:n.to_string(),provider:Provider::Codex,alias:format!("账号 {n}"),source:PathBuf::from(format!("profile-{n}/auth.json")),slot:None,enabled:true,pinned:true});}c.selected="2".into();let raw=c.json();assert_eq!(Config::from_json(&raw),c);assert_eq!(c.selected_index(),Some(1));assert_eq!(c.pinned_indices(),vec![0,1]);assert!(!raw.to_string().contains("access_token"));}
+    #[test] fn magpie_channels_group_accounts_and_respect_display_switches(){
+        let mut c=Config::default();let channel=|id:&str,name:&str|Channel{id:id.into(),name:name.into()};
+        let (first,new_first)=c.connect_magpie(&channel("workbuddy","WorkBuddy"),"符号家","符号家");
+        let (_,new_second)=c.connect_magpie(&channel("workbuddy-ai","WorkBuddy AI"),"xuenann123@gmail.com","");
+        assert!(new_first&&new_second);assert_eq!(c.accounts.len(),2);
+        assert_eq!(c.accounts[1].alias,"xuenann123@gmail.com","没有别名时用网关用户名");
+        let(again,is_new)=c.connect_magpie(&channel("workbuddy","WorkBuddy"),"符号家","");
+        assert!(!is_new&&again==first,"重复读取不能新建账号");assert_eq!(c.accounts.len(),2);
+        c.colors.insert(first.clone(),Accent::Gold);c.accounts[0].pinned=false;c.accounts[0].enabled=false;
+        c.connect_magpie(&channel("workbuddy","WorkBuddy"),"符号家","");
+        assert_eq!(c.colors[&first],Accent::Gold);assert!(!c.accounts[0].pinned,"重新读取要保留常驻偏好");
+        c.accounts[0].enabled=true;
+        assert_eq!(c.channels(),vec![("workbuddy".into(),"WorkBuddy".into()),("workbuddy-ai".into(),"WorkBuddy AI".into())]);
+        c.set_channel("workbuddy",false);
+        assert_eq!(c.visible_indices(),vec![1],"关掉的渠道不进额度页");
+        assert_eq!(c.pinned_indices().len(),1,"关掉的渠道也不进刘海");
+        assert_eq!(Config::from_json(&c.json()),c,"渠道与账号都要能存回来");
+        c.set_channel("workbuddy",true);assert_eq!(c.visible_indices(),vec![0,1]);
+    }
+    #[test] fn legacy_quota_config_without_channels_still_loads(){
+        let mut c=Config::from_json(&json!({"accounts":[{"id":"a","provider":"Codex","alias":"个人","source":"a.json"}]}));
+        assert_eq!(c.accounts.len(),1);assert!(c.hidden.is_empty());
+        assert_eq!(c.accounts[0].channel,None);assert_eq!(c.accounts[0].channel_id(),"Codex");
+        assert!(c.add(Provider::Magpie,"x".into(),"a.json".into()).is_err(),"Magpie 账号不能靠文件添加");
+    }
+    #[test] fn multi_account_config_keeps_sources_and_selection_separate(){
+let mut c=Config::default();for n in 1..=2{c.accounts.push(Account{id:n.to_string(),provider:Provider::Codex,alias:format!("账号 {n}"),source:PathBuf::from(format!("profile-{n}/auth.json")),slot:None,enabled:true,pinned:true,channel:None});}c.selected="2".into();let raw=c.json();assert_eq!(Config::from_json(&raw),c);assert_eq!(c.selected_index(),Some(1));assert_eq!(c.pinned_indices(),vec![0,1]);assert!(!raw.to_string().contains("access_token"));}
 }

@@ -360,8 +360,8 @@ impl H {
         use crate::quota::{Account,Provider,Snapshot,Window};
         for i in 0..count {
             let id=format!("preview-{i}");
-            self.app.quota.config.accounts.push(Account{id:id.clone(),provider:Provider::ALL[i%3],alias:format!("账号 {}",i+1),source:format!("preview-{i}.json").into(),slot:None,enabled:true,pinned:true});
-            self.app.quota_event(crate::quota::Event{id,result:Ok(Snapshot{windows:vec![Window{label:"本周".into(),seconds:Some(604800),remaining:100.0,reset:None}],..Default::default()})});
+            self.app.quota.config.accounts.push(Account{id:id.clone(),provider:Provider::ALL[i%3],alias:format!("账号 {}",i+1),source:format!("preview-{i}.json").into(),slot:None,enabled:true,pinned:true,channel:None});
+            self.app.quota_event(crate::quota::Event{id,result:Ok(Snapshot{windows:vec![Window{label:"本周".into(),seconds:Some(604800),remaining:100.0,reset:None,caption:None}],..Default::default()})});
         }
     }
     fn quota_centers(&self)->Vec<f32> {
@@ -1269,7 +1269,7 @@ fn resident_layout_gallery(){
         for (i,a) in h.app.quota.config.accounts.iter().enumerate(){
             if let Some(Ok(snapshot))=h.app.quota.rows.get_mut(&a.id){
                 snapshot.windows[0].remaining=82.0-i as f32*11.0;
-                if i%2==0 {snapshot.windows.push(crate::quota::Window{label:"5 小时".into(),seconds:Some(18000),remaining:58.0,reset:None});}
+                if i%2==0 {snapshot.windows.push(crate::quota::Window{label:"5 小时".into(),seconds:Some(18000),remaining:58.0,reset:None,caption:None});}
             }
         }
         if music {h.media=crate::smtc::NowPlaying{title:"Track".into(),artist:"Artist".into(),playing:true,duration:120.0,..Default::default()};}
@@ -1301,54 +1301,49 @@ fn resident_layout_gallery(){
 }
 
 #[test]
-fn quota_text_stays_inside_the_inner_ring_at_zero_and_full_usage() {
-    use crate::quota::{Event,Snapshot,Window};
+fn quota_page_lists_accounts_by_channel_with_their_amounts(){
+    use crate::quota::{Account,Channel,Event,Provider,Snapshot,Window};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-    for dual in [true,false] {for remaining in [72.0,0.0,100.0] {
-        let mut h=H::new();h.quota_accounts(1);
-        let reset=Some((chrono::Local::now()+chrono::Duration::days(400)).timestamp());
-        let mut windows=vec![Window{label:"本周".into(),seconds:Some(604800),remaining,reset}];
-        if dual {windows.insert(0,Window{label:"5 小时".into(),seconds:Some(18000),remaining,reset});}
-        h.app.quota_event(Event{id:"preview-0".into(),result:Ok(Snapshot{windows,..Default::default()})});
-        h.app.show_page(6);h.hover(H::local(300.0,60.0),1.0);
-        let center=H::local(103.0,89.0);
-        let inner=h.shapes.iter().filter_map(|shape|match &shape.shape {
-            egui::Shape::Circle(circle) if circle.center.distance(center)<0.5 && circle.radius>15.0 && circle.stroke.width>0.0=>Some(circle.radius-circle.stroke.width/2.0),
-            egui::Shape::Path(path) if path.points.len()>2 && path.stroke.width>0.0=>{
-                let radius=path.points[0].distance(center);
-                ((15.0..35.0).contains(&radius) && path.points.iter().all(|point|(point.distance(center)-radius).abs()<0.5)).then_some(radius-path.stroke.width/2.0)
-            },
-            _=>None,
-        }).reduce(f32::min).unwrap_or(35.0);
-        for shape in &h.shapes {if let egui::Shape::Text(text)=&shape.shape {
-            let rect=text.visual_bounding_rect();
-            if rect.center().distance(center)<35.0 {
-                for corner in [rect.left_top(),rect.right_top(),rect.left_bottom(),rect.right_bottom()] {
-                    assert!(corner.distance(center)+0.5<inner,"{} 的文字不得碰到额度环，双周期={dual}，剩余={remaining}",text.galley.text());
-                }
-            }
-        }}
-        let texts:Vec<_>=h.shapes.iter().filter_map(|shape|match &shape.shape {
-            egui::Shape::Text(text) if text.visual_bounding_rect().left()>=H::local(157.0,0.0).x && text.visual_bounding_rect().top()>=68.0 && text.visual_bounding_rect().bottom()<=129.0=>Some((text.galley.text().to_owned(),text.visual_bounding_rect())),_=>None,
-        }).collect();
-        for (i,(a,rect)) in texts.iter().enumerate(){for (b,other) in &texts[i+1..]{assert!(!rect.intersects(*other),"{a} 与 {b} 不得重叠");}}
-        let label=if dual {"5 小时"}else{"本周剩余"};
-        assert!(h.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text()==label)),"周期说明应完整可见");
-    }}
+    let mut h=H::new();
+    let reset=Some((chrono::Local::now()+chrono::Duration::days(400)).timestamp());
+    for (id,channel,name,alias) in [
+        ("Magpie/workbuddy/a","workbuddy","WorkBuddy","符号家"),
+        ("Magpie/workbuddy/b","workbuddy","WorkBuddy","xuenann123@gmail.com"),
+        ("Magpie/codearts/c","codearts","CodeArts","156****0024"),
+    ] {
+        h.app.quota.config.accounts.push(Account{id:id.into(),provider:Provider::Magpie,alias:alias.into(),source:std::path::PathBuf::new(),slot:Some(id.rsplit('/').next().unwrap().into()),enabled:true,pinned:true,channel:Some(Channel{id:channel.into(),name:name.into()})});
+    }
+    for (id,caption) in [("Magpie/workbuddy/a","500 / 500"),("Magpie/workbuddy/b","100 / 100"),("Magpie/codearts/c","7387 / 7600")] {
+        h.app.quota_event(Event{id:id.into(),result:Ok(Snapshot{plan:"Free plan".into(),windows:vec![Window{label:"积分".into(),seconds:Some(86400),remaining:96.0,reset,caption:Some(caption.into())}],at:0,..Default::default()})});
+    }
+    h.app.show_page(6);h.hover(H::local(330.0,190.0),0.8);
+    let page=Rect::from_min_max(H::local(36.0,30.0),H::local(383.0,196.0));
+    let texts:Vec<_>=h.shapes.iter().filter_map(|shape|match &shape.shape{
+        egui::Shape::Text(text)=>{let rect=text.visual_bounding_rect();page.contains_rect(rect).then(||(text.galley.text().to_owned(),rect))},
+        _=>None,
+    }).collect();
+    for expected in ["WorkBuddy","2 个账号","符号家","xuenann123@gmail.com","CodeArts","1 个账号","7387 / 7600","积分"] {
+        assert!(texts.iter().any(|(text,_)|text==expected),"{expected} 应出现在渠道列表里");
+    }
+    for (index,(first,rect)) in texts.iter().enumerate(){
+        assert!(page.contains_rect(*rect),"文字 {first} 不能溢出面板");
+        for (other,second) in &texts[index+1..]{assert!(!rect.intersects(*second),"渠道列表里的 {first} 与 {other} 不得重叠");}
+    }
 }
 
 #[test]
 fn quota_accounts_switch_independently_and_hide_with_the_page() {
     use crate::quota::{Account,Provider};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
-    for id in ["personal","work"] {h.app.quota.config.accounts.push(Account{id:id.into(),provider:Provider::Codex,alias:id.into(),source:format!("{id}.json").into(),slot:None,enabled:true,pinned:true});}
+    for id in ["personal","work"] {h.app.quota.config.accounts.push(Account{id:id.into(),provider:Provider::Codex,alias:id.into(),source:format!("{id}.json").into(),slot:None,enabled:true,pinned:true,channel:None});}
     h.app.quota.config.selected="personal".into();
     h.app.quota_event(crate::quota::Event{id:"personal".into(),result:crate::quota::parse(Provider::Codex,&serde_json::json!({"rate_limit":{"secondary_window":{"used_percent":20,"limit_window_seconds":604800}}}))});
     h.app.quota_event(crate::quota::Event{id:"work".into(),result:Err("登录已失效".into())});
     assert_eq!(h.app.quota.rows["personal"].as_ref().unwrap().windows[0].remaining,80.0);
     assert!(h.app.quota.rows["work"].is_err());assert_eq!(h.app.quota_bar_indices().len(),2);
-    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.app.show_page(6);h.hover(H::local(300.0,60.0),0.7);
-    h.click(H::local(202.0,39.0));assert_eq!(h.app.quota.config.selected,"work");
+    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.app.show_page(6);h.hover(H::local(330.0,190.0),0.9);
+    // 列表第一行是渠道头，往下才是账号行；第二个账号在第二行中间。
+    h.click(H::local(90.0,108.0));assert_eq!(h.app.quota.config.selected,"work");
     assert_eq!(crate::quota::Config::load().selected,"work");
     h.app.set_page_visible(6,false);assert!(h.app.quota_bar_indices().is_empty());assert_ne!(h.app.page,6);
     h.app.quota.config.accounts.retain(|a|a.id!="work");h.app.quota_event(crate::quota::Event{id:"work".into(),result:Ok(Default::default())});

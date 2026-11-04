@@ -19,7 +19,7 @@ pub fn parse(v:&Value)->Result<Snapshot,String>{
     let reset=super::reset(&v["nextResetTimestampUtc"]);
     let seconds=super::reset(&v["currentPeriodStart"]).zip(reset).and_then(|(start,end)|end.checked_sub(start)).filter(|n|*n>0);
     let plan=["grokPlanLabel","cursorPlanName"].iter().find_map(|key|v[key].as_str().filter(|s|!s.trim().is_empty())).unwrap_or_default().to_owned();
-    Ok(Snapshot{plan,at:chrono::Utc::now().timestamp(),windows:vec![Window{label:if v["isUnified"].as_bool()==Some(true){"共享周额度"}else{"本周"}.into(),seconds,remaining:(100.0-used) as f32,reset}],extra:vec![]})
+    Ok(Snapshot{plan,at:chrono::Utc::now().timestamp(),windows:vec![Window{label:if v["isUnified"].as_bool()==Some(true){"共享周额度"}else{"本周"}.into(),seconds,remaining:(100.0-used) as f32,reset,caption:None}],extra:vec![]})
 }
 
 pub fn native_path()->Option<PathBuf>{std::env::var_os("APPDATA").map(|p|PathBuf::from(p).join("Grok Bot/sand-secrets.json")).filter(|p|p.is_file())}
@@ -246,7 +246,7 @@ mod tests {
         let personal=token("synthetic-personal");let work=token("synthetic-work");let personal_slot=slot_of(&personal).unwrap();let work_slot=slot_of(&work).unwrap();
         let seal=|text:&str|{let aead=aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM,&key).unwrap());let nonce=[3u8;12];let mut sealed=text.as_bytes().to_vec();aead.seal_in_place_append_tag(aead::Nonce::assume_unique_for_key(nonce),aead::Aad::empty(),&mut sealed).unwrap();let mut blob=b"v10".to_vec();blob.extend_from_slice(&nonce);blob.extend_from_slice(&sealed);STANDARD.encode(blob)};
         let path=dir.join("sand-secrets.json");let raw=json!({"cursor-accounts":json!({"active":work_slot,"accounts":{&personal_slot:{"cursor-access-token":seal(&personal)},&work_slot:{"cursor-access-token":seal(&work)}}}).to_string()}).to_string();fs::write(&path,&raw).unwrap();
-        let account=Account{id:"synthetic".into(),provider:super::super::Provider::GrokBot,alias:"个人".into(),source:path.clone(),slot:Some(personal_slot),enabled:true,pinned:true};
+        let account=Account{id:"synthetic".into(),provider:super::super::Provider::GrokBot,alias:"个人".into(),source:path.clone(),slot:Some(personal_slot),enabled:true,pinned:true,channel:None};
         assert_eq!(native_session(&account).unwrap().token,personal);assert_eq!(fs::read_to_string(&path).unwrap(),raw);
         fs::remove_file(path).unwrap();fs::remove_file(dir.join("Local State")).unwrap();fs::remove_dir(dir).unwrap();
     }
@@ -280,7 +280,7 @@ mod tests {
         let subject=format!("synthetic-daozai-{}-{}",std::process::id(),chrono::Utc::now().timestamp_nanos_opt().unwrap());
         let token=format!("e30.{}.test",URL_SAFE_NO_PAD.encode(json!({"sub":subject}).to_string()));let slot=slot_of(&token).unwrap();let _cleanup=Cleanup(credential(&slot).unwrap());
         let auth=Session{token,refresh:Some("synthetic-refresh".into())};save_session(&slot,&auth).unwrap();let restored=stored_session(&slot).unwrap();assert_eq!(restored.token,auth.token);assert_eq!(restored.refresh,auth.refresh);
-        let account=Account{id:"synthetic".into(),provider:super::super::Provider::GrokBot,alias:"测试".into(),source:PathBuf::new(),slot:Some(slot.clone()),enabled:true,pinned:true};forget(&account);assert!(stored_session(&slot).is_err());
+        let account=Account{id:"synthetic".into(),provider:super::super::Provider::GrokBot,alias:"测试".into(),source:PathBuf::new(),slot:Some(slot.clone()),enabled:true,pinned:true,channel:None};forget(&account);assert!(stored_session(&slot).is_err());
     }
     #[test]
     fn request_is_a_read_only_rpc_and_errors_never_echo_the_body(){

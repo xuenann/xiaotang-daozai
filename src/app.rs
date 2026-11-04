@@ -22,6 +22,7 @@ use std::path::PathBuf;
 // ---------- 几何（逻辑点；原版 125% 截图 ÷ 1.25） ----------
 pub const PW: f32 = 419.0; // 展开面板宽
 pub const PH: f32 = 140.0; // 展开面板高
+pub(crate) const QUOTA_H: f32 = 200.0; // 额度页按渠道列出账号，需要更高
 pub(crate) const CALENDAR_PAGE: usize = 7;
 pub(crate) const CALENDAR_H: f32 = 216.0;
 pub const BAR_W: f32 = 163.0; // 收起药丸宽
@@ -1080,7 +1081,7 @@ impl App {
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
-        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
+        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else if self.page==6 {QUOTA_H}else{PH}
     }
 
     // ---------------------------------------------------------------
@@ -1200,7 +1201,9 @@ impl App {
                 let mail_body=self.page==5 && self.mail.open_uid.is_some()
                     && Rect::from_min_max(Pos2::new(46.0,104.0),Pos2::new(374.0,194.0)).contains(cursor);
                 let mail_list=self.page==5 && self.mail.open_uid.is_none() && self.mail.recent.len()>3 && Rect::from_min_max(Pos2::new(182.0,36.0),Pos2::new(380.0,122.0)).contains(cursor);
-                if mail_body || mail_list {self.wheel_delta=0.0;}
+                // 额度页的渠道列表自己滚动，别把滚轮再当成翻页。
+                let quota_list=self.page==6 && Rect::from_min_max(Pos2::new(36.0,36.0),Pos2::new(383.0,self.expanded_height()-20.0)).contains(cursor);
+                if mail_body || mail_list || quota_list {self.wheel_delta=0.0;}
                 else {
                     // 累积高精度滚轮的小幅输入；停顿或反向时丢弃上一段余量。
                     if self.t-self.wheel_at>0.18 || self.wheel_delta*scroll<0.0 {self.wheel_delta=0.0;}
