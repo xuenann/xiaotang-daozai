@@ -23,6 +23,8 @@ use std::path::PathBuf;
 pub const PW: f32 = 419.0; // 展开面板宽
 pub const PH: f32 = 140.0; // 展开面板高
 pub(crate) const QUOTA_H: f32 = 200.0; // 额度页按渠道列出账号，需要更高
+pub(crate) const SMS_H: f32 = 200.0; // 短信页：验证码卡片 + 消息列表
+pub(crate) const SMS_DETAIL_H: f32 = 236.0; // 短信全文：和邮件详情一样高，长短信靠滚动
 pub(crate) const CALENDAR_PAGE: usize = 7;
 pub(crate) const CALENDAR_H: f32 = 216.0;
 pub const BAR_W: f32 = 163.0; // 收起药丸宽
@@ -39,7 +41,7 @@ pub const RAD: f32 = 33.0; // 底部圆角
 pub const WIN_W: f32 = 640.0; // 窗口（透明画布）
 pub const CANVAS_W: f32 = WIN_W + 640.0; // 为右侧通知预留透明画布，原岛仍按 WIN_W 定位。
 pub const WIN_H: f32 = 270.0;
-pub(crate) const PAGE_NAMES: [&str; 8] = ["音乐", "专注", "饮水", "置物架", "待办", "邮箱", "AI 额度", "日程"];
+pub(crate) const PAGE_NAMES: [&str; 9] = ["音乐", "专注", "饮水", "置物架", "待办", "邮箱", "AI 额度", "日程", "短信"];
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -293,6 +295,31 @@ impl CalendarState {
 
 }
 
+/// 短信页的显示状态。接收线程在外壳里，`App` 只关心「收到了什么、服务在不在跑」。
+pub(crate) struct SmsState {
+    pub recent: Vec<crate::sms::Message>,
+    pub running: bool,
+    pub error: Option<String>,
+    /// 本机局域网地址，拿不到就显示成 127.0.0.1。
+    pub local: Option<String>,
+    /// 正在查看全文的那条短信；None 表示列表态。
+    pub open_id: Option<u64>,
+}
+
+impl Default for SmsState {
+    fn default() -> Self {
+        Self { recent: Vec::new(), running: false, error: None, local: None, open_id: None }
+    }
+}
+
+fn clip_text(text: &str, max: usize) -> String {
+    let mut out: String = text.chars().take(max).collect();
+    if text.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
 pub struct App {
     pub opts: Options,
     pub settings: model::Settings,
@@ -316,7 +343,7 @@ pub struct App {
     page_dir: f32,
     page_t0: f64,
     slide: Spring,
-    dots: [Spring; 8],
+    dots: [Spring; 9],
     wheel_delta: f32,
     wheel_at: f64,
     wheel_page_at: f64,
@@ -371,6 +398,7 @@ pub struct App {
     pub(crate) settings_category:usize,
     pub(crate) notification_apps:model::NotificationApps,
     pub(crate) subpage:Option<usize>,
+    pub(crate) sms: SmsState,
     pub(crate) task_dialog:Option<crate::extras::TaskDraft>,
     pub listener_status: String,
     pub(crate) notification_bell_until: f64,
@@ -430,7 +458,12 @@ impl App {
             s.visuals.text_cursor.stroke = egui::Stroke::new(1.5_f32, theme::BLUE);
             s.visuals.selection.bg_fill = theme::alpha_blue(0.45);
         });
-        let settings = model::Settings::load();
+        let mut settings = model::Settings::load();
+        // 短信转发令牌：第一次运行（或旧配置里没有这一项）时生成，之后固定。
+        if settings.sms_token.is_empty() {
+            settings.sms_token = crate::sms::new_token();
+            settings.save();
+        }
         let (bw, bh) = if settings.minimal { (BAR_W_MIN, BAR_H_MIN) } else { (BAR_W, BAR_H) };
         let focus_seconds=settings.focus_minutes as f32*60.0;
         let initial_lyrics=settings.lyrics_enabled;
@@ -487,6 +520,7 @@ impl App {
             media: NowPlaying::default(),
             music_artwork: None,
             forced_open_until:0.0, settings_open:false, browser_at_top:false, browser_minimal_active:false, settings_focus_requested:false, settings_tab:0, settings_category:0, notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
+            sms: SmsState { local: crate::sms::local_ipv4(), ..Default::default() },
             listener_status: "尚未连接".into(),
             notification_bell_until: 0.0, notification_bell_at: -10.0, notice: None, hud_notice: None, hud_alpha: 0.0, notice_width:Spring::new(0.0,CLOSE.0,CLOSE.1), notice_details:false, alerts: Default::default(), history: Default::default(), pending: vec![],
             todo_first: 0, pet: Default::default(), last_drink: None,
@@ -561,6 +595,29 @@ impl App {
                 });
             }
         }
+    }
+
+    /// 短信接收线程推来的一条短信：进列表、上岛。
+    pub fn sms_message(&mut self, message: crate::sms::Message) {
+        let title = if message.code.is_some() { "短信验证码" } else { "新短信" };
+        let detail = match &message.code {
+            Some(code) => format!("{} · {}", message.from, code),
+            None => format!("{} · {}", message.from, clip_text(&message.text, 26)),
+        };
+        self.sms
+            .recent
+            .retain(|item| item.id != message.id);
+        self.sms.recent.insert(0, message);
+        self.sms.recent.truncate(crate::sms::KEEP);
+        self.alert(title, detail, 8, false);
+        self.notification_bell_at = self.t;
+        self.notification_bell_until = self.t + 6.0;
+    }
+
+    /// 接收线程的监听状态（端口占用、未开启等），只在变化时由外壳推送。
+    pub fn sms_status(&mut self, running: bool, error: Option<String>) {
+        self.sms.running = running;
+        self.sms.error = error;
     }
 
     /// 设置窗口第 8 个标签页：邮件。
@@ -901,7 +958,7 @@ impl App {
 
     pub fn show_page(&mut self,page:usize) {
         if !self.settings.visible_pages[page] {
-            self.settings_tab=[1,2,3,5,4,7,11,8][page];
+            self.settings_tab=[1,2,3,5,4,7,11,8,12][page];
             self.open_settings();
             return;
         }
@@ -1081,7 +1138,7 @@ impl App {
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
-        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else if self.page==6 {QUOTA_H}else{PH}
+        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else if self.page==6 {QUOTA_H}else if self.page==8 {if self.sms.open_id.is_some(){SMS_DETAIL_H}else{SMS_H}}else{PH}
     }
 
     // ---------------------------------------------------------------
@@ -1203,7 +1260,8 @@ impl App {
                 let mail_list=self.page==5 && self.mail.open_uid.is_none() && self.mail.recent.len()>3 && Rect::from_min_max(Pos2::new(182.0,36.0),Pos2::new(380.0,122.0)).contains(cursor);
                 // 额度页的渠道列表自己滚动，别把滚轮再当成翻页。
                 let quota_list=self.page==6 && Rect::from_min_max(Pos2::new(36.0,36.0),Pos2::new(383.0,self.expanded_height()-20.0)).contains(cursor);
-                if mail_body || mail_list || quota_list {self.wheel_delta=0.0;}
+                let sms_list=self.page==8 && Rect::from_min_max(Pos2::new(36.0,36.0),Pos2::new(383.0,self.expanded_height()-20.0)).contains(cursor);
+                if mail_body || mail_list || quota_list || sms_list {self.wheel_delta=0.0;}
                 else {
                     // 累积高精度滚轮的小幅输入；停顿或反向时丢弃上一段余量。
                     if self.t-self.wheel_at>0.18 || self.wheel_delta*scroll<0.0 {self.wheel_delta=0.0;}
@@ -1595,7 +1653,7 @@ impl App {
         let (hover,press)=c.hover_t(&settings);
         c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
         paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
-        if settings.clicked(){self.settings_tab=[1,2,3,5,4,7,11,8][self.page];self.open_settings();}
+        if settings.clicked(){self.settings_tab=[1,2,3,5,4,7,11,8,12][self.page];self.open_settings();}
         if self.subpage==Some(self.page) {
             c.text(15.0,25.0,"‹",19.0,W::Bold,theme::WHITE,H::Left);
             c.text(37.0,25.0,if self.page==2{"饮水设置"}else{"专注设置"},size::TITLE,W::Bold,theme::WHITE,H::Left);
@@ -1636,6 +1694,7 @@ impl App {
             4 => ("待办", "清单", theme::GREEN),
             5 => ("邮箱", "", theme::CYAN),
             6 => ("AI", "额度", theme::SOFT_GREEN),
+            8 => ("短信", "", theme::CYAN),
             _ => ("岛仔", "设置", theme::WHITE),
         };
         let wa = c.text(15.0, base, a, size::TITLE, W::Bold, theme::WHITE, H::Left);
@@ -1692,6 +1751,7 @@ impl App {
             4 => self.page_todo(c, env, cmds),
             5 => self.page_mail(c, env, cmds),
             6 => self.page_quota(c),
+            8 => self.page_sms(c, cmds),
             CALENDAR_PAGE => self.page_calendar(c,env),
             _ => self.page_settings(c),
         }

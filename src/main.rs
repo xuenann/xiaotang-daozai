@@ -51,6 +51,10 @@ struct Shell {
     quota: daozai::quota::Service,
     quota_sig: Option<(bool,Vec<daozai::quota::Account>)>,
     quota_at: PollClock,
+    /// v0.6.51：短信转发接收线程，以及上次下发的开关/端口/令牌与推送过的状态。
+    sms: daozai::sms::Inbox,
+    sms_sig: (bool, u16, String),
+    sms_status: Option<daozai::sms::Status>,
 }
 
 impl Shell {
@@ -115,6 +119,7 @@ impl Shell {
             cal: daozai::calendar::Service::start(),
             cal_sig: (Vec::new(), true),
             quota: daozai::quota::Service::start(), quota_sig: None, quota_at: PollClock::default(),
+            sms: daozai::sms::Inbox::default(), sms_sig: (false, 0, String::new()), sms_status: None,
         }
     }
 
@@ -268,6 +273,12 @@ impl eframe::App for Shell {
             self.cal_sig=(cal,auto_sync);
         }
         while let Some(ev)=self.cal.try_recv(){self.app.calendar_event(ev);}
+        // 短信：开关 / 端口 / 令牌变了才重启监听，再把收到的短信和监听状态交给界面。
+        let sms=(self.app.settings.sms_enabled,self.app.settings.sms_port,self.app.settings.sms_token.clone());
+        if sms!=self.sms_sig{self.sms.sync(sms.0,sms.1,sms.2.clone());self.sms_sig=sms;}
+        while let Some(message)=self.sms.try_recv(){self.app.sms_message(message);}
+        let status=self.sms.status();
+        if self.sms_status.as_ref()!=Some(&status){self.app.sms_status(status.running,status.error.clone());self.sms_status=Some(status);}
         #[cfg(feature="record")] let quota_demo=std::env::var("DAOZAI_QUOTA_DEMO").is_ok();
         #[cfg(not(feature="record"))] let quota_demo=false;
         if !quota_demo {

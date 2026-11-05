@@ -191,15 +191,15 @@ fn settings_keep_dark_buttons_when_system_theme_changes() {
 #[test]
 fn expanded_settings_routes_preserve_inline_controls(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-    for (page,tab) in [1,2,3,5,4,7,11,8].into_iter().enumerate(){
-        let mut h=H::new();h.app.show_page(page);h.hover(H::local(200.0,40.0),1.0);
+    for (page,tab) in [1,2,3,5,4,7,11,8,12].into_iter().enumerate(){
+        let mut h=H::new();h.app.set_page_visible(page,true);h.app.show_page(page);h.hover(H::local(200.0,40.0),1.0);
         h.click(H::local(394.0,18.0));
         assert!(h.app.settings_open,"页面 {page} 应打开设置窗口");
         assert_eq!(h.app.settings_tab,tab);assert_eq!(h.app.page,page);
         assert!(h.app.subpage.is_none());
     }
     for (page,point) in [(1,H::local(111.0,18.0)),(2,H::local(149.0,110.0))]{
-        let mut h=H::new();h.app.show_page(page);h.hover(H::local(200.0,40.0),1.0);
+        let mut h=H::new();h.app.set_page_visible(page,true);h.app.show_page(page);h.hover(H::local(200.0,40.0),1.0);
         h.click(point);assert_eq!(h.app.subpage,Some(page));assert!(!h.app.settings_open);
         h.click(H::local(394.0,18.0));assert!(h.app.settings_open);
         assert_eq!(h.app.subpage,Some(page),"打开完整设置后应保留岛内调整页");
@@ -1354,7 +1354,7 @@ fn quota_accounts_switch_independently_and_hide_with_the_page() {
 fn page_visibility_is_saved_and_sets_the_starting_page() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    assert_eq!(h.app.settings.visible_pages,[true;8]);
+    assert_eq!(h.app.settings.visible_pages,[true,true,true,true,true,true,true,true,false],"短信页默认不进轮播");
     assert!(h.app.settings.show_battery);
     h.app.settings.show_battery=false;
     h.app.set_page_visible(0,false);
@@ -1362,17 +1362,17 @@ fn page_visibility_is_saved_and_sets_the_starting_page() {
     h.app.settings.save();
     let settings=crate::model::Settings::load();
     assert!(!settings.show_battery);
-    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true]);
+    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true,false]);
     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
     assert_eq!(restarted.page(),1);
     assert_eq!(restarted.settings.visible_pages,settings.visible_pages);
     assert!(!restarted.settings.show_battery);
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=000000\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,false]);
+    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,false,false]);
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=1000000\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,true],"旧版页面开关应保留，并开启新增的日程页");
+    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,true,false],"旧版页面开关应保留，新增的日程页开启、短信页不占轮播");
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=invalid\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true;8]);
+    assert_eq!(crate::model::Settings::load().visible_pages,[true,true,true,true,true,true,true,true,false]);
 }
 
 #[test]
@@ -2654,9 +2654,30 @@ fn todo_notice_view_locates_the_reminded_task() {
     let mut h=H::new();
     h.app.todos.items=(0..7).map(|i|crate::model::TodoItem{text:format!("任务 {i}"),done_on:None,due:if i==6{Some("2026-10-28 09:40".into())}else{None},reminded:false}).collect();
     for _ in 0..60 {h.frame(vec![]);}
-    h.click_text("查看");
+    // 横幅本身就是入口：点岛体任意位置直接展开到待办页。
+    h.click(Pos2::new(WIN_W/2.0-60.0,15.0));
     assert_eq!(h.app.page,4);
     assert!(h.app.todo_first>=4,"打开待办页时应能看到收到提醒的任务");
+}
+
+#[test]
+fn sms_banner_opens_the_sms_page_in_one_click(){
+    use crate::sms::Message;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.sms_enabled=true;
+    h.app.set_page_visible(8,true);
+    h.app.sms.recent.clear();
+    h.app.sms_message(Message{id:1,from:"10690007".into(),text:"【某平台】验证码 928374，5 分钟内有效".into(),at:chrono::Local::now().timestamp(),code:Some("928374".into()),score:95});
+    for _ in 0..60 {h.frame(vec![]);}
+    assert!(h.app.notice.is_some(),"收到短信应弹出提醒");
+    assert!(!h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="查看")),"短信提醒不再有「查看」按钮");
+    h.click(Pos2::new(WIN_W/2.0-60.0,15.0));
+    assert_eq!(h.app.page,8,"点横幅应直接到短信页");
+    assert!(h.app.open,"点完应保持展开，不用再移一次鼠标");
+    for _ in 0..90 {h.frame(vec![]);}
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains("928374"))),"展开后左侧应直接显示验证码");
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="验证码")),"验证码卡片标题应可见");
 }
 
 #[test]
@@ -3282,10 +3303,10 @@ fn calendar_sync_result_does_not_enqueue_another_sync() {
 fn page_order_persists_and_controls_navigation() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    h.app.settings.page_order=[5,2,0,1,3,4,6,7];
+    h.app.settings.page_order=[5,2,0,1,3,4,6,7,8];
     h.app.settings.save();
     let settings=crate::model::Settings::load();
-    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7]);
+    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8]);
     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
     assert_eq!(restarted.page(),5);
     for page in [1,3,4,6,7] {h.app.set_page_visible(page,false);}
@@ -3301,7 +3322,7 @@ fn page_order_persists_and_controls_navigation() {
     assert_eq!(h.app.page,5);
     for invalid in ["0,0,1,2,3,4,5,6","8,1,2,3,4,5,6,7","0,1","invalid"] {
         std::fs::write(crate::model::config_dir().join("settings.txt"),format!("page_order={invalid}\n")).unwrap();
-        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7]);
+        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8]);
     }
 }
 
@@ -3328,9 +3349,9 @@ fn page_order_drag_applies_on_release_and_saves() {
     draw(&mut h,vec![egui::Event::PointerMoved(from),button(from,true)]);
     draw(&mut h,vec![egui::Event::PointerMoved(from+egui::vec2(0.0,10.0))]);
     draw(&mut h,vec![egui::Event::PointerMoved(to)]);
-    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7]);
+    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8]);
     draw(&mut h,vec![button(to,false)]);
-    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7]);
+    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8]);
     assert_eq!(crate::model::Settings::load().page_order,h.app.settings.page_order);
 }
 
@@ -3455,4 +3476,115 @@ fn mail_report_save_and_failure_paths() {
     assert_eq!(h.app.mail.testing.as_deref(),Some(email.as_str()));
     h.app.mail_event(crate::mail::Event::Test{account:email,ok:false,note:"模拟网络超时".into()});frame(&mut h,vec![]);
     assert!(h.app.mail.testing.is_none());assert!(h.app.mail.note.contains("模拟网络超时"));
+}
+
+#[test]
+fn sms_page_shows_the_latest_code_and_the_message_list(){
+    use crate::sms::Message;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.sms_enabled=true;
+    h.app.sms_status(true,None);
+    h.app.sms.local=Some("192.168.1.7".into());
+    h.app.sms.recent.clear();
+    h.app.set_page_visible(8,true);
+    let now=chrono::Local::now().timestamp();
+    for (id,from,text,code) in [
+        (1u64,"10690007","【某平台】验证码 384756，5 分钟内有效",Some("384756")),
+        (2,"10086","您本月流量已用 8.2G",None),
+        (3,"京东","订单 202411050001 已发货",None),
+    ]{
+        h.app.sms.recent.push(Message{id,from:from.into(),text:text.into(),at:now,code:code.map(str::to_string),score:90});
+    }
+    h.app.show_page(8);h.hover(H::local(330.0,190.0),0.9);
+    let page=Rect::from_min_max(H::local(36.0,30.0),H::local(383.0,196.0));
+    let texts:Vec<_>=h.shapes.iter().filter_map(|shape|match &shape.shape{
+        egui::Shape::Text(text)=>{let rect=text.visual_bounding_rect();page.contains_rect(rect).then(||(text.galley.text().to_owned(),rect))},
+        _=>None,
+    }).collect();
+    for expected in ["验证码","384756","10690007","点击复制","10086"]{
+        assert!(texts.iter().any(|(text,_)|text.contains(expected)),"{expected} 应出现在短信页");
+    }
+    for (index,(first,rect)) in texts.iter().enumerate(){
+        assert!(page.contains_rect(*rect),"文字 {first} 不能溢出面板");
+        for (other,second) in &texts[index+1..]{assert!(!rect.intersects(*second),"短信页的 {first} 与 {other} 不得重叠");}
+    }
+}
+
+#[test]
+fn sms_page_guides_to_settings_when_the_service_is_off(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.sms_enabled=false;
+    h.app.sms.recent.clear();
+    h.app.set_page_visible(8,true);
+    h.app.show_page(8);h.hover(H::local(330.0,190.0),0.9);
+    h.click_text("去设置");
+    assert!(h.app.settings_open,"未开启时应能直接打开设置");
+    assert_eq!(h.app.settings_tab,12);
+}
+
+#[test]
+fn sms_messages_land_newest_first_and_raise_a_code_alert(){
+    use crate::sms::Message;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.sms.recent.clear();
+    h.app.history.clear();
+    let now=chrono::Local::now().timestamp();
+    h.app.sms_message(Message{id:1,from:"10086".into(),text:"您本月流量已用 8.2G".into(),at:now,code:None,score:0});
+    h.app.sms_message(Message{id:2,from:"10690007".into(),text:"验证码 384756".into(),at:now,code:Some("384756".into()),score:92});
+    assert_eq!(h.app.sms.recent[0].id,2,"新短信应排在最前面");
+    assert_eq!(h.app.sms.recent.len(),2);
+    let alert=h.app.history.front().expect("验证码短信应上岛");
+    assert_eq!(alert.title,"短信验证码");
+    assert!(alert.body.contains("384756"));
+    assert_eq!(alert.page,8);
+}
+
+#[test]
+fn sms_settings_persist_and_the_token_is_generated_once(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    let token=h.app.settings.sms_token.clone();
+    assert_eq!(token.chars().count(),24,"令牌应为 24 位十六进制");
+    h.app.settings.sms_enabled=true;
+    h.app.settings.sms_port=4123;
+    h.app.settings.save();
+    let loaded=crate::model::Settings::load();
+    assert!(loaded.sms_enabled);
+    assert_eq!(loaded.sms_port,4123);
+    assert_eq!(loaded.sms_token,token);
+    assert_eq!(crate::model::Settings::default().sms_port,crate::sms::DEFAULT_PORT);
+}
+
+#[test]
+fn sms_without_code_opens_the_full_text_instead_of_copying(){
+    use crate::sms::Message;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.sms_enabled=true;
+    h.app.set_page_visible(8,true);
+    h.app.sms.recent.clear();
+    h.app.sms.open_id=None;
+    let now=chrono::Local::now().timestamp();
+    h.app.sms.recent.push(Message{id:1,from:"10086".into(),text:"您本月流量已用 8.2G，超出部分按 0.29 元/MB 计费".into(),at:now,code:None,score:0});
+    h.app.show_page(8);
+    for _ in 0..70 {h.frame(vec![]);}
+    // 点列表第一行的来源号码，命中整行。
+    let point=h.shapes.iter().find_map(|s|match &s.shape{
+        egui::Shape::Text(t) if t.galley.text()=="10086" && s.clip_rect.contains(t.visual_bounding_rect().center()) => Some(t.visual_bounding_rect().center()),
+        _=>None,
+    }).expect("列表里应显示来源号码");
+    h.hover(point,0.2);
+    h.click(point);
+    assert_eq!(h.app.sms.open_id,Some(1),"没有验证码时应打开全文");
+    assert!(!h.cmds.iter().any(|c|matches!(c,crate::app::Cmd::Copy(_))),"没有验证码时不应自动复制");
+    for _ in 0..70 {h.frame(vec![]);}
+    assert!(h.app.expanded_height()>=230.0,"全文态应比列表态更高");
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains("0.29"))),"全文应显示完整内容");
+    // 点「返回」回到列表。
+    h.click(H::local(64.0,46.0));
+    assert_eq!(h.app.sms.open_id,None,"返回后应回到列表");
+    assert_eq!(h.app.expanded_height(),crate::app::SMS_H);
 }
