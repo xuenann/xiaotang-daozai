@@ -24,6 +24,8 @@ pub mod model;
 pub mod otp;
 pub mod quota;
 mod quota_ui;
+pub mod sms;
+mod sms_ui;
 mod pages;
 mod extras;
 mod pet;

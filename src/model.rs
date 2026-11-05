@@ -89,8 +89,8 @@ pub struct Settings {
     pub pet: bool,
     pub minimal: bool,
     pub browser_minimal: bool,
-    pub visible_pages: [bool; 8],
-    pub page_order: [usize; 8],
+    pub visible_pages: [bool; 9],
+    pub page_order: [usize; 9],
     pub show_battery: bool,
     pub resident_order: Vec<usize>,
     pub system_hud: bool,
@@ -117,11 +117,16 @@ pub struct Settings {
     /// 用户点开设置或关掉后置 false，不再弹。
     pub calendar_prompt: bool,
     pub calendar_auto_sync: bool,
+    /// v0.6.51 短信：手机端把短信转发到本机端口，开启后才监听。
+    /// 令牌只用于挡住同网段的误发，明文存在配置里就够了。
+    pub sms_enabled: bool,
+    pub sms_port: u16,
+    pub sms_token: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, resident_order: Vec::new(), system_hud: true, read_notifications:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_code: true, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true }
+        Self { settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, visible_pages: [true,true,true,true,true,true,true,true,false], page_order: [0,1,2,3,4,5,6,7,8], show_battery: true, resident_order: Vec::new(), system_hud: true, read_notifications:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_code: true, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, sms_enabled: false, sms_port: crate::sms::DEFAULT_PORT, sms_token: String::new() }
     }
 }
 
@@ -139,16 +144,29 @@ impl Settings {
                     if crate::bar_layout::valid_order(&order){s.resident_order=order;}
                 }
                 "page_order" => {
-                    if let Ok(order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
-                        if order.len()==8 && (0..8).all(|page|order.contains(&page)) {
+                    if let Ok(mut order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
+                        // 只接受「完整排列」：当前页数，或上一版的页数（末尾补上新页）。
+                        // 缺页、重复、越界一律当坏值丢弃，保留默认顺序。
+                        let count=s.page_order.len();
+                        let legacy=count-1;
+                        let complete=|list:&[usize],len:usize|list.len()==len && (0..len).all(|page|list.contains(&page));
+                        if complete(&order,count) {
+                            s.page_order.copy_from_slice(&order);
+                        } else if complete(&order,legacy) {
+                            order.extend(legacy..count);
                             s.page_order.copy_from_slice(&order);
                         }
                     }
                 }
                 "show_battery" => s.show_battery = v != "0",
-                "visible_pages" if (6..=8).contains(&v.len()) && v.bytes().all(|b| b==b'0' || b==b'1') => {
-                    for (enabled,value) in s.visible_pages.iter_mut().zip(v.bytes()) { *enabled=value==b'1'; }
-                    for enabled in &mut s.visible_pages[v.len()..]{*enabled=v.bytes().any(|b|b==b'1');}
+                "visible_pages" if (6..=9).contains(&v.len()) && v.bytes().all(|b| b==b'0' || b==b'1') => {
+                    let bytes=v.as_bytes();
+                    let any=v.bytes().any(|b|b==b'1');
+                    for (index,enabled) in s.visible_pages.iter_mut().enumerate() {
+                        *enabled=if index<bytes.len() {bytes[index]==b'1'}
+                        // 旧配置没有这一页：沿用「默认开启」的老行为，但短信页不占轮播。
+                        else {index<8 && any};
+                    }
                 }
                 "read_notifications" => s.read_notifications=v=="1",
                 "system_hud" => s.system_hud = v != "0",
@@ -171,6 +189,9 @@ impl Settings {
                 "mail_ics" => s.mail_ics = match v.parse::<u32>().unwrap_or(15) { 5 => 5, 30 => 30, _ => 15 },
                 "calendar_prompt" => s.calendar_prompt = v != "0",
                 "calendar_auto_sync" => s.calendar_auto_sync = v != "0",
+                "sms_enabled" => s.sms_enabled = v == "1",
+                "sms_port" => s.sms_port = v.parse::<u16>().unwrap_or(crate::sms::DEFAULT_PORT).max(1024),
+                "sms_token" => s.sms_token = v.trim().to_string(),
                 _ => {}
             }
         }
@@ -211,6 +232,9 @@ impl Settings {
                 ("ignored_mail_events".into(), serde_json::to_string(&self.ignored_mail_events).unwrap()),
                 ("calendar_prompt".into(), (self.calendar_prompt as u8).to_string()),
                 ("calendar_auto_sync".into(), (self.calendar_auto_sync as u8).to_string()),
+                ("sms_enabled".into(), (self.sms_enabled as u8).to_string()),
+                ("sms_port".into(), self.sms_port.to_string()),
+                ("sms_token".into(), self.sms_token.clone()),
             ],
         );
     }
