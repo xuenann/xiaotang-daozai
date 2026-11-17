@@ -1,10 +1,14 @@
-//! 用户主动检查、下载并安装正式版更新。
+//! 自动检查正式版更新，下载与安装由用户确认。
 use eframe::egui;
-use std::{io::{Read, Write}, path::PathBuf, sync::{mpsc::{self, Receiver}, Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{io::{Read, Write}, path::PathBuf, sync::{mpsc::{self, Receiver}, Arc, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 
 const REPOSITORY: &str = "https://github.com/Renly1994/xiaotang-daozai";
 const API: &str = "https://api.github.com/repos/Renly1994/xiaotang-daozai/releases/latest";
 const RELEASES: &str = "https://github.com/Renly1994/xiaotang-daozai/releases/latest";
+const BACKUP_DOWNLOAD: &str = "https://pan.quark.cn/s/0a39b4e1f332";
+const STARTUP_DELAY: Duration = Duration::from_secs(10);
+const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 3600);
+const RETRY_INTERVAL: Duration = Duration::from_secs(3600);
 
 #[derive(Clone, Debug)]
 struct Release { version: String, notes: String, page: String, package: Option<Package> }
@@ -22,6 +26,10 @@ pub(crate) struct State {
     dialog_open: bool,
     focus_requested: bool,
     logo: Option<egui::TextureHandle>,
+    next_check: Option<Instant>,
+    automatic_check: bool,
+    notified_version: Option<String>,
+    history_path: Option<PathBuf>,
 }
 
 impl Drop for State {
@@ -29,20 +37,63 @@ impl Drop for State {
 }
 
 impl State {
+    pub(crate) fn load(path: PathBuf) -> Self {
+        let mut state = State::default();
+        if let Some((next, version)) = std::fs::read(&path).ok()
+            .and_then(|bytes| serde_json::from_slice::<(i64, Option<String>)>(&bytes).ok()) {
+            let seconds = next.saturating_sub(chrono::Utc::now().timestamp()).clamp(0, CHECK_INTERVAL.as_secs() as i64);
+            state.next_check = Some(Instant::now() + STARTUP_DELAY.max(Duration::from_secs(seconds as u64)));
+            state.notified_version = version;
+        }
+        state.history_path = Some(path);
+        state
+    }
+
+    fn remember_check(&self, delay: Duration) {
+        let Some(path) = &self.history_path else { return };
+        let next = chrono::Utc::now().timestamp() + delay.as_secs() as i64;
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() { return; }
+        }
+        if let Ok(bytes) = serde_json::to_vec(&(next, &self.notified_version)) {
+            let _ = crate::model::atomic_write(path, &bytes);
+        }
+    }
+
+    fn should_check(&mut self, now: Instant) -> bool {
+        now >= *self.next_check.get_or_insert(now + STARTUP_DELAY) && self.rx.is_none() && !self.dialog_open
+    }
+
+    fn begin_check(&mut self, ctx: &egui::Context, automatic: bool, load: impl FnOnce() -> Result<Option<Release>, String> + Send + 'static) -> bool {
+        if self.rx.is_some() { return false; }
+        let (tx, rx) = mpsc::channel(); self.rx = Some(rx); self.automatic_check = automatic;
+        self.next_check = Some(Instant::now() + CHECK_INTERVAL);
+        self.message.clear(); self.result = None; self.dialog_open = false; self.focus_requested = false;
+        let ctx = ctx.clone();
+        std::thread::spawn(move || { let _ = tx.send(Event::Checked(load())); ctx.request_repaint(); });
+        true
+    }
+
     pub(crate) fn poll(&mut self, ctx: &egui::Context) {
         loop {
             let event = match self.rx.as_ref().map(|rx| rx.try_recv()) {
                 Some(Ok(event)) => event,
                 Some(Err(mpsc::TryRecvError::Disconnected)) => {
                     self.rx = None; self.cancel = None;
+                    self.automatic_check = false; self.next_check = Some(Instant::now() + RETRY_INTERVAL);
                     self.message = "检查或下载已中断，请重试。".into(); break;
                 }
                 _ => break,
             };
             match event {
                 Event::Checked(result) => {
-                    self.dialog_open = matches!(&result, Ok(Some(_)));
+                    let automatic = std::mem::take(&mut self.automatic_check);
+                    let delay = if result.is_err() { RETRY_INTERVAL } else { CHECK_INTERVAL };
+                    self.next_check = Some(Instant::now() + delay);
+                    self.dialog_open = matches!(&result, Ok(Some(release)) if !automatic || self.notified_version.as_deref() != Some(release.version.as_str()));
                     self.focus_requested = self.dialog_open;
+                    if self.dialog_open { if let Ok(Some(release)) = &result { self.notified_version = Some(release.version.clone()); } }
+                    self.remember_check(delay);
                     self.result = Some(result); self.rx = None;
                 }
                 Event::Progress(value) => self.progress = value,
@@ -68,15 +119,14 @@ impl State {
                 }
             }
         }
-        if self.rx.is_some() { ctx.request_repaint_after(Duration::from_millis(100)); }
+        // 复用主界面的低频轮询；只在实际检查时启动线程，不增加常驻计时线程。
+        if !cfg!(test) && self.should_check(Instant::now()) { self.begin_check(ctx, true, check); }
+        if self.rx.is_some() && !self.automatic_check { ctx.request_repaint_after(Duration::from_millis(100)); }
     }
 
     pub(crate) fn ui(&mut self, ui: &mut egui::Ui) {
         if ui.add_enabled(self.rx.is_none(), egui::Button::new("检查更新")).clicked() {
-            let (tx, rx) = mpsc::channel(); self.rx = Some(rx);
-            self.message.clear(); self.result = None; self.dialog_open = false;
-            let ctx = ui.ctx().clone();
-            std::thread::spawn(move || { let _ = tx.send(Event::Checked(check())); ctx.request_repaint(); });
+            self.begin_check(ui.ctx(), false, check);
         }
         match &self.result {
             Some(Ok(Some(release))) => {
@@ -152,7 +202,7 @@ impl State {
                             ui.vertical(|ui| {
                                 ui.label(egui::RichText::new("岛仔有新版本了").font(theme::font(21.0,W::Semibold)));
                                 ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(env!("CARGO_PKG_VERSION")).color(theme::DIM));
+                                    ui.label(egui::RichText::new(option_env!("DAOZAI_BUILD_LABEL").unwrap_or(env!("CARGO_PKG_VERSION"))).color(theme::DIM));
                                     ui.label(egui::RichText::new("→").color(theme::DIM));
                                     egui::Frame::new().fill(theme::alpha_blue(0.12)).corner_radius(6.0)
                                         .inner_margin(egui::Margin::symmetric(8,3)).show(ui, |ui| {
@@ -185,7 +235,7 @@ impl State {
                         if self.cancel.is_some() {
                             ui.add(egui::ProgressBar::new(self.progress).fill(theme::BLUE).desired_height(8.0));
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(if self.progress<1.0{format!("正在下载更新 · {:.0}%",self.progress*100.0)}else{"正在校验安装包…".into()}).color(theme::GRAY));
+                                ui.label(egui::RichText::new(if self.progress==0.0{"正在连接下载服务器…".into()}else if self.progress<1.0{format!("正在下载更新 · {:.0}%",self.progress*100.0)}else{"正在校验安装包…".into()}).color(theme::GRAY));
                                 if ui.button("取消下载").clicked() { self.cancel.as_ref().unwrap().store(true,Ordering::Relaxed); }
                             });
                         } else {
@@ -205,14 +255,16 @@ impl State {
                                     });
                                 }
                             });
-                            ui.add_space(2.0);
-                            ui.horizontal(|ui| {
-                                ui.hyperlink_to(egui::RichText::new("浏览器下载").size(11.5).color(theme::GRAY),&release.page);
-                                ui.label(egui::RichText::new("·").color(theme::DIM));
-                                ui.hyperlink_to(egui::RichText::new("查看发布说明").size(11.5).color(theme::GRAY),&release.page);
-                            });
-                            if release.package.is_none() { ui.label(egui::RichText::new("此版本请通过浏览器下载。").size(11.5).color(theme::DIM)); }
                         }
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            ui.hyperlink_to(egui::RichText::new("网盘下载").size(11.5).color(theme::BLUE),BACKUP_DOWNLOAD);
+                            ui.label(egui::RichText::new("·").color(theme::DIM));
+                            ui.hyperlink_to(egui::RichText::new("浏览器下载").size(11.5).color(theme::GRAY),&release.page);
+                            ui.label(egui::RichText::new("·").color(theme::DIM));
+                            ui.hyperlink_to(egui::RichText::new("查看发布说明").size(11.5).color(theme::GRAY),&release.page);
+                        });
+                        if release.package.is_none() { ui.label(egui::RichText::new("此版本请通过浏览器下载。").size(11.5).color(theme::DIM)); }
                     });
                     if self.rx.is_some() { ctx.request_repaint_after(Duration::from_millis(100)); }
                 });
@@ -221,7 +273,32 @@ impl State {
 
 }
 
-// Windows 的 GL 透明窗口可能仍显示黑底，按绘制轮廓裁掉窗口外沿。
+/// 只统计岛仔自己的文件（KB）。共享安装文件夹里的其他软件不算在内。
+/// 诊断脚本已内嵌在程序里（`--collect-diagnostics`），安装目录不再附带单独的诊断文件。
+fn own_files_kb(dir: &std::path::Path) -> u32 {
+    let bytes: u64 = ["daozai.exe", "Uninstall.exe", "LICENSE", "THIRD_PARTY_NOTICES.txt"].iter()
+        .filter_map(|name| std::fs::metadata(dir.join(name)).ok()).filter(|meta| meta.is_file()).map(|meta| meta.len()).sum();
+    bytes.div_ceil(1024).min(u64::from(u32::MAX)) as u32
+}
+
+/// 启动时为安装版登记真实大小：旧版安装器没有写 `EstimatedSize`，
+/// 软件管家会统计整个安装文件夹；装进共享文件夹时会显示几十 GB。只在登记的安装位置就是本程序所在目录时写入。
+#[cfg(windows)]
+pub fn record_install_size() {
+    use windows::{core::w, Win32::System::Registry::{RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_DWORD, RRF_RT_REG_SZ}};
+    let key = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Daozai");
+    let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(PathBuf::from)) else { return };
+    let mut buffer = [0u16; 1024];
+    let mut size = (buffer.len() * 2) as u32;
+    if unsafe { RegGetValueW(HKEY_CURRENT_USER, key, w!("InstallLocation"), RRF_RT_REG_SZ, None, Some(buffer.as_mut_ptr().cast()), Some(&mut size)) }.is_err() { return; }
+    let location = String::from_utf16_lossy(&buffer[..buffer.iter().position(|c| *c == 0).unwrap_or(0)]);
+    let same = |a: &std::path::Path, b: &std::path::Path| a.canonicalize().ok().zip(b.canonicalize().ok()).is_some_and(|(a, b)| a == b);
+    if location.trim().is_empty() || !same(std::path::Path::new(location.trim()), &dir) { return; }
+    let kb = own_files_kb(&dir);
+    if kb == 0 { return; }
+    let _ = unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, key, w!("EstimatedSize"), REG_DWORD.0, Some((&kb as *const u32).cast()), 4) };
+}
+
 #[cfg(windows)]
 fn clip_update_window(rect: egui::Rect, scale: f32) {
     use windows::Win32::{Foundation::{BOOL, HWND, LPARAM}, Graphics::Gdi::*,
@@ -253,13 +330,30 @@ unsafe fn update_window_region(rect: egui::Rect, scale: f32) -> windows::Win32::
     )
 }
 
+fn update_agent(proxy: Option<&str>, timeout: Duration) -> Result<ureq::Agent, String> {
+    // 整体 timeout 会覆盖读取超时，分别限制连接和无数据等待。
+    let mut builder = ureq::AgentBuilder::new().try_proxy_from_env(false)
+        .timeout_connect(Duration::from_secs(20)).timeout_read(timeout).timeout_write(timeout);
+    if let Some(proxy) = proxy {
+        builder = builder.proxy(ureq::Proxy::new(proxy).map_err(|_| "代理地址无效，请检查代理设置后重试")?);
+    }
+    Ok(builder.build())
+}
+
+fn http_agent() -> Result<ureq::Agent, String> {
+    let proxy = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter().find_map(|key| std::env::var(key).ok().filter(|value| !value.trim().is_empty()))
+        .or_else(crate::quota::system_proxy);
+    update_agent(proxy.as_deref(), Duration::from_secs(15))
+}
+
 fn check() -> Result<Option<Release>, String> {
-    let response = ureq::AgentBuilder::new().timeout(Duration::from_secs(15)).build()
+    let response = http_agent()?
         .get(API).set("User-Agent", concat!("Daozai/", env!("CARGO_PKG_VERSION")))
         .set("Accept", "application/vnd.github+json").call().map_err(|error| match error {
             ureq::Error::Status(403 | 429, _) => "检查过于频繁，请稍后重试".to_owned(),
             ureq::Error::Status(404, _) => "暂未找到正式版本，请查看发布页".to_owned(),
-            _ => "无法连接更新服务，请检查网络后重试".to_owned(),
+            _ => "无法连接更新服务，请检查网络或代理后重试".to_owned(),
         })?;
     let value: serde_json::Value = serde_json::from_reader(response.into_reader())
         .map_err(|_| "更新信息格式异常，请稍后重试".to_owned())?;
@@ -288,8 +382,8 @@ fn download(release: &Release, tx: &mpsc::Sender<Event>, cancel: &AtomicBool) ->
     let work = root.join(format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
     std::fs::create_dir_all(&work).map_err(|_| "无法创建更新缓存")?;
     let result = (|| {
-        let response = ureq::AgentBuilder::new().timeout(Duration::from_secs(600)).timeout_read(Duration::from_secs(15)).build()
-            .get(&package.url).call().map_err(|_| "下载失败，请检查网络后重试")?;
+        let response = http_agent()?
+            .get(&package.url).call().map_err(|_| "连接下载服务器失败，请检查网络或代理，或使用网盘下载")?;
         if !response.get_url().starts_with("https://") { return Err("更新下载未使用安全连接".into()); }
         let mut input = response.into_reader();
         let mut output = std::fs::File::create(work.join("update.zip")).map_err(|_| "无法保存更新包")?;
@@ -309,7 +403,7 @@ fn transfer(input: &mut impl Read, output: &mut impl Write, package: &Package, c
     let mut buffer = [0u8; 65536]; let mut total = 0u64;
     loop {
         if cancel.load(Ordering::Relaxed) { return Err("下载已取消".into()); }
-        let length = input.read(&mut buffer).map_err(|_| "下载中断，请重试")?;
+        let length = input.read(&mut buffer).map_err(|_| "下载中断或等待超时，请重试或使用网盘下载")?;
         if length == 0 { break; }
         total += length as u64;
         if total > package.size { return Err("更新包大小不符，请重新下载".into()); }
@@ -323,14 +417,13 @@ fn transfer(input: &mut impl Read, output: &mut impl Write, package: &Package, c
 
 #[cfg(windows)]
 fn launch_installer(work: &std::path::Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
     let target = std::env::current_exe().map_err(|_| "无法找到当前程序")?;
     let shell = std::env::var_os("SystemRoot").map(PathBuf::from).ok_or("无法找到 Windows 目录")?
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let mut child = std::process::Command::new(shell).args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+    let mut child = crate::child_process::spawn(std::process::Command::new(shell).args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(work.join("apply.ps1")).arg("-WorkPath").arg(work).arg("-TargetExe").arg(target)
-        .arg("-ParentProcessId").arg(std::process::id().to_string()).creation_flags(0x08000000)
-        .spawn().map_err(|_| "无法启动更新程序，请通过浏览器下载安装")?;
+        .arg("-ParentProcessId").arg(std::process::id().to_string()))
+        .map_err(|_| "无法启动更新程序，请通过浏览器下载安装")?;
     // 脚本先确认缓存和安装目录可用，再允许主程序退出。
     for _ in 0..100 {
         if work.join("ready").exists() { return Ok(()); }
@@ -366,8 +459,136 @@ fn parse_release(value: &serde_json::Value, current: &str) -> Result<Option<Stri
 }
 
 #[cfg(test)]
+mod install_size_tests {
+    #[test]
+    fn install_size_counts_only_daozai_files() {
+        let dir = std::env::temp_dir().join(format!("daozai-size-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Other App")).unwrap();
+        std::fs::write(dir.join("daozai.exe"), vec![0u8; 3000]).unwrap();
+        std::fs::write(dir.join("LICENSE"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.join("Other App").join("big.bin"), vec![0u8; 5 * 1024 * 1024]).unwrap();
+        std::fs::write(dir.join("other.exe"), vec![0u8; 2 * 1024 * 1024]).unwrap();
+        assert_eq!(super::own_files_kb(&dir), 4, "共享文件夹里其他软件的文件不计入");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_check_waits_for_startup_and_idle_state() {
+        let mut state = State::default();
+        let start = Instant::now();
+        assert!(!state.should_check(start));
+        let due = start + Duration::from_secs(10);
+        assert!(!state.should_check(due - Duration::from_millis(1)));
+        assert!(state.should_check(due));
+        let (_tx, rx) = mpsc::channel(); state.rx = Some(rx);
+        assert!(!state.should_check(due));
+        state.rx = None; state.dialog_open = true;
+        assert!(!state.should_check(due));
+        state.dismiss();
+        assert!(state.should_check(due));
+    }
+
+    #[test]
+    fn automatic_check_reschedules_success_and_silent_failure() {
+        for (result, delay) in [(Ok(None), Duration::from_secs(24 * 3600)), (Err("网络失败".into()), Duration::from_secs(3600))] {
+            let mut state = State::default(); state.automatic_check = true;
+            let (tx, rx) = mpsc::channel(); state.rx = Some(rx);
+            tx.send(Event::Checked(result)).unwrap();
+            let before = Instant::now();
+            state.poll(&egui::Context::default());
+            let after = Instant::now();
+            let next = state.next_check.unwrap();
+            assert!(next >= before + delay && next <= after + delay);
+            assert!(!state.dialog_open); assert!(!state.focus_requested);
+            assert!(!state.automatic_check); assert!(state.rx.is_none());
+            assert!(!state.should_check(next - Duration::from_millis(1)));
+            assert!(state.should_check(next));
+        }
+    }
+
+    #[test]
+    fn automatic_notice_is_once_per_version_and_manual_check_can_reopen_it() {
+        let path=std::env::temp_dir().join(format!("daozai-update-check-{}.json",std::process::id()));
+        let _=std::fs::remove_file(&path);
+        for (automatic, version, expected) in [(true, "v0.6.65", true), (true, "v0.6.65", false),
+            (true, "v0.6.66", true), (false, "v0.6.66", true)] {
+            let mut state=State::load(path.clone());
+            if path.exists() { assert!(!state.should_check(Instant::now()+Duration::from_secs(3600))); }
+            state.automatic_check = automatic;
+            let (tx, rx) = mpsc::channel(); state.rx = Some(rx);
+            tx.send(Event::Checked(Ok(Some(Release { version: version.into(), notes: String::new(), page: RELEASES.into(),
+                package: Some(Package { url: String::new(), size: 1, hash: String::new() }) })))).unwrap();
+            state.poll(&egui::Context::default());
+            assert_eq!(state.dialog_open, expected); assert_eq!(state.focus_requested, expected);
+            assert!(state.rx.is_none()); assert!(state.cancel.is_none()); assert_eq!(state.progress, 0.0);
+            assert!(matches!(&state.result, Some(Ok(Some(release))) if release.version == version));
+            state.dismiss();
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn background_checks_do_not_overlap_active_work() {
+        let mut state = State::default();
+        let ctx = egui::Context::default();
+        assert!(state.begin_check(&ctx, true, || Ok(None)));
+        assert!(!state.begin_check(&ctx, false, || panic!("已有任务时不应发起检查")));
+        assert!(matches!(state.rx.as_ref().unwrap().recv_timeout(Duration::from_secs(3)), Ok(Event::Checked(Ok(None)))));
+    }
+
+    #[test]
+    fn update_requests_use_configured_proxy() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            loop {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                    let mut request = [0; 4096];
+                    let n = stream.read(&mut request).unwrap();
+                    assert!(String::from_utf8_lossy(&request[..n]).starts_with("GET http://127.0.0.1:1/update.zip"));
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").unwrap();
+                    return;
+                }
+                if start.elapsed() > Duration::from_secs(3) { return; }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let result = update_agent(Some(&proxy), Duration::from_millis(200)).unwrap()
+            .get("http://127.0.0.1:1/update.zip").call();
+        worker.join().unwrap();
+        assert_eq!(result.unwrap().into_string().unwrap(), "ok");
+    }
+
+    #[test]
+    fn stalled_update_response_times_out() {
+        for (scheme, body) in [("http", false), ("https", false), ("http", true)] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("{scheme}://{}", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            if body {
+                stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                stream.read(&mut [0; 4096]).unwrap();
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n").unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(1200));
+        });
+        let start = std::time::Instant::now();
+        let result = update_agent(None, Duration::from_millis(100)).unwrap().get(&url).call();
+        if body { assert!(result.unwrap().into_string().is_err()); }
+        else { assert!(result.is_err()); }
+        let elapsed = start.elapsed();
+        worker.join().unwrap();
+        assert!(elapsed < Duration::from_secs(1), "等待响应超时未生效：{elapsed:?}");
+        }
+    }
     fn release(tag: &str) -> serde_json::Value {
         serde_json::json!({"tag_name":tag,"draft":false,"prerelease":false})
     }
@@ -432,11 +653,17 @@ mod tests {
             if !disconnected { tx.send(Event::Checked(Ok(None))).unwrap(); }
             drop(tx);
             let mut state = State::default(); state.rx = Some(rx);
+            state.automatic_check = true;
+            let before = Instant::now();
             let _ = ctx.run(Default::default(), |ctx| {
                 state.poll(ctx);
                 egui::CentralPanel::default().show(ctx, |ui| state.ui(ui));
             });
             assert!(state.rx.is_none());
+            assert!(!state.automatic_check);
+            let delay = if disconnected { Duration::from_secs(3600) } else { Duration::from_secs(24 * 3600) };
+            let next = state.next_check.unwrap();
+            assert!(next >= before + delay && next <= Instant::now() + delay);
             assert_eq!(!state.message.is_empty(), disconnected);
         }
     }
@@ -488,8 +715,8 @@ mod tests {
         std::env::set_var("DAOZAI_DATA_DIR", dest.join("data"));
         let ctx = egui::Context::default();
         let mut app = crate::app::App::new(&ctx, Default::default());
-        app.updates.result = Some(Ok(Some(Release { version: "v0.6.40".into(),
-            notes: "新增应用内下载更新\n优化桌面交互体验".into(), page: RELEASES.into(),
+        app.updates.result = Some(Ok(Some(Release { version: "v0.6.63".into(),
+            notes: "- 更新下载支持 Windows 系统代理\n- 连接失败及时提示，避免长时间停在 0%\n- 新增网盘下载入口".into(), page: RELEASES.into(),
             package: Some(Package { url: String::new(), size: 100, hash: String::new() }) })));
         app.updates.dialog_open = true;
         app.settings_tab = 9;
@@ -509,6 +736,15 @@ mod tests {
             *capture.lock().unwrap() = Some(ctx.run(raw, |ctx| (viewport.viewport_ui_cb)(ctx)));
         });
         let mut raster = crate::preview_raster::Raster::new(520, 416);
+        for (name, progress, message) in [
+            ("update-dialog", None, ""),
+            ("update-connecting", Some(0.0), ""),
+            ("update-downloading", Some(0.42), ""),
+            ("update-failed", None, "连接下载服务器失败，请检查网络或代理，或使用网盘下载"),
+        ] {
+        app.updates.cancel = progress.map(|_| Arc::new(AtomicBool::new(false)));
+        app.updates.progress = progress.unwrap_or_default();
+        app.updates.message = message.into();
         for frame in 0..5 {
             let root = ctx.run(Default::default(), |ctx| app.settings_ui(ctx, false));
             raster.update_textures(&root.textures_delta);
@@ -519,10 +755,11 @@ mod tests {
                 raster.draw(&ctx.tessellate(child.shapes, child.pixels_per_point), child.pixels_per_point);
                 let mut rgba = Vec::new();
                 raster.to_rgba8(&mut rgba);
-                image::save_buffer(dest.join("update-dialog.png"), &rgba, 520, 416, image::ColorType::Rgba8).unwrap();
+                image::save_buffer(dest.join(format!("{name}.png")), &rgba, 520, 416, image::ColorType::Rgba8).unwrap();
             }
             raster.free_textures(&root.textures_delta);
             raster.free_textures(&child.textures_delta);
+        }
         }
         if let Some(old) = old { std::env::set_var("DAOZAI_DATA_DIR", old); }
         else { std::env::remove_var("DAOZAI_DATA_DIR"); }

@@ -14,7 +14,8 @@ use eframe::egui::{self, Color32};
 const ROW_H: f32 = 34.0;
 const CARD_W: f32 = 140.0;
 const CARD_H: f32 = 110.0;
-const SETTINGS: usize = 12;
+/// 设置窗口里「短信」分页的序号；与 extras.rs 的 titles / SETTINGS_GROUPS 保持一致。
+const SETTINGS: usize = 13;
 
 /// 设置页里预览长模板用；超出部分用省略号收掉。
 fn clip(text: &str, max: usize) -> String {
@@ -263,7 +264,7 @@ impl App {
         });
         // 开启转发就把短信页带进轮播，省得用户再去「页面管理」翻一遍。
         if !was_enabled && self.settings.sms_enabled {
-            self.set_page_visible(8, true);
+            self.set_page_visible(crate::app::SMS_PAGE, true);
         }
 
         settings_label(ui, "转发地址");
