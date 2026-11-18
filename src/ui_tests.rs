@@ -965,7 +965,7 @@ fn expanded_settings_routes_preserve_inline_controls(){
     let mut h=H::new();h.app.show_page(3);h.hover(H::local(200.0,40.0),1.0);
     h.click(H::local(330.0,18.0));assert!(h.cmds.iter().any(|cmd|matches!(cmd,crate::app::Cmd::AddFiles)));
     assert!(!h.app.settings_open);
-    h.app.show_page(6);h.hover(H::local(200.0,40.0),1.0);h.click(H::local(319.0,18.0));
+    h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(200.0,40.0),1.0);h.click(H::local(319.0,18.0));
     assert!(h.cmds.iter().any(|cmd|matches!(cmd,crate::app::Cmd::QuotaRefresh)));assert!(!h.app.settings_open);
 }
 
@@ -2713,10 +2713,10 @@ fn quota_text_stays_inside_the_inner_ring_at_zero_and_full_usage() {
     for dual in [true,false] {for remaining in [72.0,0.0,100.0] {
         let mut h=H::new();h.quota_accounts(1);
         let reset=Some((chrono::Local::now()+chrono::Duration::days(400)).timestamp());
-        let mut windows=vec![Window{label:"本周".into(),seconds:Some(604800),remaining,reset,amount:None}];
-        if dual {windows.insert(0,Window{label:"5 小时".into(),seconds:Some(18000),remaining,reset,amount:None});}
+        let mut windows=vec![Window{label:"本周".into(),seconds:Some(604800),remaining,reset,amount:None,caption:None}];
+        if dual {windows.insert(0,Window{label:"5 小时".into(),seconds:Some(18000),remaining,reset,amount:None,caption:None});}
         h.app.quota_event(Event{id:"preview-0".into(),result:Ok(Snapshot{windows,..Default::default()})});
-        h.app.show_page(6);h.hover(H::local(300.0,60.0),1.0);
+        h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(300.0,60.0),1.0);
         let center=H::local(103.0,105.0);
         let inner=h.shapes.iter().filter_map(|shape|match &shape.shape {
             egui::Shape::Circle(circle) if circle.center.distance(center)<0.5 && circle.radius>15.0 && circle.stroke.width>0.0=>Some(circle.radius-circle.stroke.width/2.0),
@@ -2780,7 +2780,7 @@ fn kiro_ring_uses_logo_for_all_point_balances_and_skins(){
     for skin in crate::model::Skin::ALL{for remaining in [0.0,0.01,99.9,1000.0,10000.0]{
         let mut h=H::new();h.app.settings.skin=skin;let snapshot=kiro_snapshot(remaining,10000.0);let full=format!("{} 点",snapshot.windows[0].value_text());
         h.app.quota.config.accounts.push(crate::quota::Account{id:"kiro".into(),provider:crate::quota::Provider::Kiro,alias:"Kiro".into(),source:"kiro.json".into(),slot:None,enabled:true,pinned:true,channel:None});h.app.quota.config.selected="kiro".into();
-        h.app.quota_event(crate::quota::Event{id:"kiro".into(),result:Ok(snapshot)});h.app.show_page(6);h.hover(H::local(300.0,60.0),0.7);
+        h.app.quota_event(crate::quota::Event{id:"kiro".into(),result:Ok(snapshot)});h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(300.0,60.0),0.7);
         let find=|wanted:&str|h.shapes.iter().find_map(|shape|match &shape.shape{egui::Shape::Text(t)if t.galley.text()==wanted=>Some(t.visual_bounding_rect()),_=>None}).unwrap_or_else(||panic!("缺少文本 {wanted}"));
         let center=H::local(103.0,105.0);
         let logo=h.shapes.iter().find_map(|shape|match &shape.shape{egui::Shape::Mesh(mesh)=>{let rect=mesh.calc_bounds();(rect.center().distance(center)<0.8&&(30.0..36.0).contains(&rect.width())).then_some(rect)},_=>None}).expect("圆环中心应显示 Kiro 标识");
@@ -2799,7 +2799,7 @@ fn kiro_logo_and_point_details_fit_the_card(){
     let reset=Some((chrono::Local::now()+chrono::Duration::days(20)).timestamp());
     h.app.quota_event(Event{id:"kiro".into(),result:Ok(Snapshot{kiro:kiro_snapshot(904.09,1000.0).kiro,plan:"KIRO PRO".into(),at:chrono::Utc::now().timestamp(),
         windows:vec![Window{label:"月度额度".into(),seconds:None,remaining:90.4,reset,amount:Some(Amount::new(904.09,1000.0)),caption:None}],..Default::default()})});
-    h.app.show_page(6);h.hover(H::local(300.0,60.0),1.0);
+    h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(300.0,60.0),1.0);
     let center=H::local(103.0,105.0);
     let inner=h.shapes.iter().filter_map(|shape|match &shape.shape{
         egui::Shape::Circle(circle) if circle.center.distance(center)<0.5 && circle.radius>15.0 && circle.stroke.width>0.0=>Some(circle.radius-circle.stroke.width/2.0),
@@ -2858,7 +2858,7 @@ fn kiro_credit_pools_gallery(){
     for(skin,name)in [(crate::model::Skin::Classic,"dark"),(crate::model::Skin::GlassLight,"light")]{for pools in [false,true]{
         let mut h=H::new();h.app.settings.skin=skin;let mut snapshot=kiro_snapshot(10000.0,10000.0);
         if pools{snapshot=crate::quota::parse(crate::quota::Provider::Kiro,&serde_json::json!({"userInfo":{"userId":"ui-kiro-user"},"subscriptionInfo":{"subscriptionTitle":"KIRO PRO"},"usageBreakdownList":[{"resourceType":"CREDIT","usageLimitWithPrecision":1000,"currentUsageWithPrecision":1000,"nextDateReset":1796083200_i64,"freeTrialInfo":{"freeTrialStatus":"ACTIVE","usageLimit":500,"currentUsage":100,"freeTrialExpiry":1827619200_i64},"bonuses":[{"status":"ACTIVE","displayName":"加购点数","usageLimit":125,"currentUsage":25,"expiresAt":1827619200_i64}]}]})).unwrap();}
-        let id="kiro".to_owned();h.app.quota.config.accounts.push(crate::quota::Account{id:id.clone(),provider:crate::quota::Provider::Kiro,alias:"Kiro".into(),source:"kiro.json".into(),slot:None,enabled:true,pinned:true,channel:None});h.app.quota.config.selected=id.clone();h.app.quota_event(crate::quota::Event{id,result:Ok(snapshot)});h.app.show_page(6);
+        let id="kiro".to_owned();h.app.quota.config.accounts.push(crate::quota::Account{id:id.clone(),provider:crate::quota::Provider::Kiro,alias:"Kiro".into(),source:"kiro.json".into(),slot:None,enabled:true,pinned:true,channel:None});h.app.quota.config.selected=id.clone();h.app.quota_event(crate::quota::Event{id,result:Ok(snapshot)});h.app.show_page(6);h.app.quota.detail_open=true;
         let mut raster=feature_raster();shoot_feature(&mut h,&mut raster,&dest,&format!("kiro-{name}-{}",if pools{"pools"}else{"power"}),75,Some(H::local(300.0,60.0)),"2026-11-11");
         if pools{
             h.app.settings.settings_theme=if name=="light"{crate::settings_theme::SettingsTheme::Light}else{crate::settings_theme::SettingsTheme::Dark};h.app.settings_tab=11;h.app.open_settings();h.ctx.set_embed_viewports(false);
@@ -2955,7 +2955,7 @@ fn kiro_simulated_states_gallery(){
                     raster.free_textures(&root.textures_delta);raster.free_textures(&child.textures_delta);
                 }
             }else{
-                h.app.show_page(6);let mut raster=feature_raster();
+                h.app.show_page(6);h.app.quota.detail_open=true;let mut raster=feature_raster();
                 for frame in 0..75{
                     h.t+=1.0/60.0;let cursor=Some(H::local(300.0,60.0));
                     let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-11-11".into(),date:"11月11日 周三".into(),cursor,bt_ready:true,..Default::default()};
@@ -3018,7 +3018,7 @@ fn quota_update_status_is_visible_for_every_provider_and_keeps_failed_data(){
             _=>Snapshot{windows:vec![Window{label:"5 小时".into(),seconds:Some(18000),remaining:72.0,reset:None,amount:None,caption:None},Window{label:"本周".into(),seconds:Some(604800),remaining:44.0,reset:None,amount:None,caption:None}],..Default::default()},
         };
         snapshot.at=at;h.app.quota_event(Event{id:"preview-0".into(),result:Ok(snapshot)});
-        h.app.show_page(6);
+        h.app.show_page(6);h.app.quota.detail_open=true;
         if let Some(dest)=std::env::var_os("DAOZAI_QUOTA_STATUS_PREVIEW_DIR"){
             let dest=std::path::PathBuf::from(dest);std::fs::create_dir_all(&dest).unwrap();let mut raster=feature_raster();
             shoot_feature(&mut h,&mut raster,&dest,&format!("quota-{}",provider.name()),90,Some(H::local(300.0,60.0)),"2026-11-07");
@@ -3046,13 +3046,13 @@ fn quota_update_status_is_visible_for_every_provider_and_keeps_failed_data(){
 #[test]
 fn quota_page_navigation_tracks_the_taller_panel(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.quota_accounts(1);
-    h.app.show_page(6);h.hover(H::local(300.0,60.0),0.8);
+    h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(300.0,60.0),0.8);
     assert!((h.hit.height()-178.0).abs()<0.2,"额度页新增的底部空间应属于命中区域");
     let dot=h.shapes.iter().find_map(|shape|match &shape.shape{
         egui::Shape::Rect(rect) if (rect.rect.width()-4.0).abs()<0.1&&(rect.rect.height()-4.0).abs()<0.1&&(rect.rect.center().y-168.8).abs()<0.1=>Some(rect.rect.center()),_=>None,
     }).expect("分页圆点应随加高的面板下移");
     h.click(dot);assert_ne!(h.app.page,6,"新增底部区域中的分页应可点击");
-    h.app.show_page(6);h.hover(H::local(300.0,60.0),0.8);
+    h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(300.0,60.0),0.8);
     h.click(H::local(21.0,88.0));assert_eq!(h.app.page,5);
     h.hover(H::local(300.0,60.0),0.8);assert_eq!(h.app.expanded_height(),PH);
     h.click(H::local(398.0,68.0));assert_eq!(h.app.page,6);
@@ -3066,7 +3066,7 @@ fn quota_update_status_marks_previous_dates_and_never_shows_epoch_time(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.quota_accounts(1);
     let at=chrono::Local::now()-chrono::Duration::days(1);
     let snapshot=Snapshot{at:at.timestamp(),windows:vec![Window{label:"本周".into(),seconds:Some(604800),remaining:44.0,reset:None,amount:None,caption:None}],..Default::default()};
-    h.app.quota_event(Event{id:"preview-0".into(),result:Ok(snapshot.clone())});h.app.show_page(6);h.hover(H::local(300.0,60.0),0.6);
+    h.app.quota_event(Event{id:"preview-0".into(),result:Ok(snapshot.clone())});h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(300.0,60.0),0.6);
     let expected=format!("{} 更新",at.format("%m/%d %H:%M"));
     assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()==expected)),"跨天记录应包含日期");
     h.app.quota_event(Event{id:"preview-0".into(),result:Ok(Snapshot{at:0,..snapshot})});h.frame(vec![]);
@@ -3078,7 +3078,7 @@ fn claude_local_quota_shows_the_record_time_and_does_not_invent_resets(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.quota_accounts(1);h.app.quota.config.accounts[0].provider=crate::quota::Provider::Claude;
     let at=chrono::Utc::now().timestamp()-60;h.app.quota_event(crate::quota::Event{id:"preview-0".into(),result:Ok(crate::quota::Snapshot{at,windows:vec![
         crate::quota::Window{label:"5 小时".into(),seconds:Some(18000),remaining:89.0,reset:None,amount:None,caption:None},crate::quota::Window{label:"本周".into(),seconds:Some(604800),remaining:24.0,reset:None,amount:None,caption:None}],..Default::default()})});
-    h.app.show_page(6);let mut raster=feature_raster();let mut shapes=Vec::new();
+    h.app.show_page(6);h.app.quota.detail_open=true;let mut raster=feature_raster();let mut shapes=Vec::new();
     for _ in 0..90{
         h.t+=1.0/60.0;let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(crate::app::CANVAS_W,WIN_H))),time:Some(h.t),viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(2.0),..Default::default()})).collect(),..Default::default()};
         let env=Env{t:h.t,clock:"20:30:00".into(),date:"11月6日 周五".into(),today:"2026-11-06".into(),cursor:Some(Pos2::new(WIN_W/2.0,12.0)),..Default::default()};
@@ -3103,7 +3103,7 @@ fn quota_accounts_switch_independently_and_hide_with_the_page() {
     h.app.quota_event(crate::quota::Event{id:"work".into(),result:Err("登录已失效".into())});
     assert_eq!(h.app.quota.rows["personal"].as_ref().unwrap().windows[0].remaining,80.0);
     assert!(h.app.quota.rows["work"].is_err());assert_eq!(h.app.quota_bar_indices().len(),2);
-    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.app.show_page(6);h.hover(H::local(300.0,60.0),0.7);
+    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(300.0,60.0),0.7);
     h.click(H::local(202.0,39.0));assert_eq!(h.app.quota.config.selected,"work");
     assert_eq!(crate::quota::Config::load().selected,"work");
     h.app.set_page_visible(6,false);assert!(h.app.quota_bar_indices().is_empty());assert_ne!(h.app.page,6);
@@ -5921,7 +5921,7 @@ fn page_order_persists_and_controls_navigation() {
     h.app.settings.page_order=[5,2,0,1,3,4,6,7,8,9];
     h.app.settings.save();
     let settings=crate::model::Settings::load();
-    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8]);
+    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8,9]);
     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
     assert_eq!(restarted.page(),5);
     for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
@@ -5937,7 +5937,7 @@ fn page_order_persists_and_controls_navigation() {
     assert_eq!(h.app.page,5);
     for invalid in ["0,0,1,2,3,4,5,6","8,1,2,3,4,5,6,7","0,1","invalid"] {
         std::fs::write(crate::model::config_dir().join("settings.txt"),format!("page_order={invalid}\n")).unwrap();
-        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8]);
+        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8,9]);
     }
 }
 
@@ -5964,9 +5964,9 @@ fn page_order_drag_applies_on_release_and_saves() {
     draw(&mut h,vec![egui::Event::PointerMoved(from),button(from,true)]);
     draw(&mut h,vec![egui::Event::PointerMoved(from+egui::vec2(0.0,10.0))]);
     draw(&mut h,vec![egui::Event::PointerMoved(to)]);
-    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8]);
+    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8,9]);
     draw(&mut h,vec![button(to,false)]);
-    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8]);
+    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8,9]);
     assert_eq!(crate::model::Settings::load().page_order,h.app.settings.page_order);
 }
 
@@ -6925,7 +6925,7 @@ fn deepseek_balance_gallery(){
         h.app.quota_event(Event{id:id.clone(),result:Ok(snapshot)});if stale{h.app.quota_event(Event{id:id.clone(),result:Err("无法连接".into())});}
         if name=="loading"{h.app.quota.rows.remove(&id);h.app.quota.busy.insert(id.clone());}
         if name=="error"{h.app.quota.rows.remove(&id);h.app.quota_event(Event{id,result:Err("暂时无法查询余额，请稍后重试".into())});}
-        if open{h.app.show_page(6);}
+        if open{h.app.show_page(6);h.app.quota.detail_open=true;}
         let mut raster=crate::preview_raster::Raster::new(1280,380);
         for frame in 0..90{
             let t=frame as f64/60.0;let env=Env{t,clock:"09:41:00".into(),battery:Some(80),charging:true,cursor:if open{Some(Pos2::new(320.0,60.0))}else{None},..Default::default()};
@@ -7035,7 +7035,7 @@ fn quota_cards_settings_gallery(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_DEEPSEEK_PREVIEW_DIR").expect("需指定预览目录"));
     for (name,width,light,dialog) in [("dark",690.0,false,false),("light",690.0,true,false),("wide",900.0,false,false),("connect",690.0,false,true),("narrow",600.0,false,false)]{
         let mut h=H::new();h.quota_accounts(2);h.app.quota.config.accounts[0].alias="本机账号".into();h.app.quota.config.accounts[1].alias="桌面版 1".into();
-        for (i,remaining) in [54.0,72.0].into_iter().enumerate(){let account_id=h.app.quota.config.accounts[i].id.clone();h.app.quota_event(crate::quota::Event{id:account_id,result:Ok(crate::quota::Snapshot{windows:vec![crate::quota::Window{label:"5 小时".into(),seconds:Some(18000),remaining:remaining+20.0,reset:None,amount:None,caption:None},crate::quota::Window{label:"本周".into(),seconds:Some(604800),remaining,reset:None,amount:None}],at:chrono::Utc::now().timestamp(),..Default::default()})});}
+        for (i,remaining) in [54.0,72.0].into_iter().enumerate(){let account_id=h.app.quota.config.accounts[i].id.clone();h.app.quota_event(crate::quota::Event{id:account_id,result:Ok(crate::quota::Snapshot{windows:vec![crate::quota::Window{label:"5 小时".into(),seconds:Some(18000),remaining:remaining+20.0,reset:None,amount:None,caption:None},crate::quota::Window{label:"本周".into(),seconds:Some(604800),remaining,reset:None,amount:None,caption:None}],at:chrono::Utc::now().timestamp(),..Default::default()})});}
         let id=h.app.quota.config.connect_deepseek("preview".into(),"DeepSeek".into());h.app.quota_event(crate::quota::Event{id,result:Err("API Key 验证失败，请重新连接账号".into())});
         h.app.quota.connect_open=dialog;h.app.quota.provider=crate::quota::Provider::DeepSeek;
         h.app.settings.settings_theme=if light{crate::settings_theme::SettingsTheme::Light}else{crate::settings_theme::SettingsTheme::Dark};h.app.settings_tab=11;h.app.open_settings();h.ctx.set_embed_viewports(false);
@@ -7397,7 +7397,7 @@ fn workbuddy_balance_gallery(){
         if name=="error"{h.app.quota.rows.remove(&id);h.app.quota_event(Event{id,result:Err("暂时无法查询余额，请稍后重试".into())});}
         let wb=h.app.quota.config.connect_workbuddy("preview".into(),"WorkBuddy".into());
         h.app.quota_event(Event{id:wb,result:crate::quota::parse(Provider::WorkBuddy,&serde_json::json!({"code":0,"data":{"Packages":[{"CycleRemainCapacity":"2000"}],"CreditGroups":[{"Kind":"plan_base","CycleRemainCapacity":"500"},{"Kind":"benefit","CycleRemainCapacity":"1500"}]}}))});
-        if open{h.app.show_page(6);}
+        if open{h.app.show_page(6);h.app.quota.detail_open=true;}
         let mut raster=crate::preview_raster::Raster::new(1280,380);
         for frame in 0..90{
             let t=frame as f64/60.0;let env=Env{t,clock:"09:41:00".into(),battery:Some(80),charging:true,cursor:if open{Some(Pos2::new(320.0,60.0))}else{None},..Default::default()};
@@ -8526,7 +8526,7 @@ fn quota_acceptance_monthly_limit_is_visible_on_the_card() {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     let snapshot=plans::parse(plans::PlanProvider::OpenCodeGo,&serde_json::json!({"usage":{"rolling":{"percent":20},"weekly":{"percent":30},"monthly":{"percent":100}}})).unwrap();
     h.app.quota.config.accounts=vec![Account{id:"preview".into(),provider:Provider::OpenCodeGo,alias:"OpenCode Go".into(),source:Default::default(),slot:None,enabled:true,pinned:false,channel:None}];
-    h.app.quota.config.selected="preview".into();h.app.quota.rows.insert("preview".into(),Ok(snapshot));h.app.show_page(6);h.hover(H::local(230.0,65.0),1.0);
+    h.app.quota.config.selected="preview".into();h.app.quota.rows.insert("preview".into(),Ok(snapshot));h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(230.0,65.0),1.0);
     assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().contains("本月"))),"月额度已经用完，但卡片没有直接显示本月限制");
 }
 
@@ -8547,7 +8547,7 @@ fn quota_acceptance_relay_subscription_exhausted_week_is_visible() {
     use crate::quota::{Provider,Account,relay};
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     let snapshot=relay::parse_sub2api(&serde_json::json!({"mode":"unrestricted","isValid":true,"unit":"USD","remaining":0,"subscription":{"daily_limit_usd":10,"daily_usage_usd":2,"weekly_limit_usd":20,"weekly_usage_usd":20}})).unwrap();
-    h.app.quota.config.accounts=vec![Account{id:"relay".into(),provider:Provider::Sub2Api,alias:"工作中转".into(),source:"https://relay.example".into(),slot:None,enabled:true,pinned:false,channel:None}];h.app.quota.config.selected="relay".into();h.app.quota.rows.insert("relay".into(),Ok(snapshot));h.app.show_page(6);h.hover(H::local(230.0,65.0),1.0);
+    h.app.quota.config.accounts=vec![Account{id:"relay".into(),provider:Provider::Sub2Api,alias:"工作中转".into(),source:"https://relay.example".into(),slot:None,enabled:true,pinned:false,channel:None}];h.app.quota.config.selected="relay".into();h.app.quota.rows.insert("relay".into(),Ok(snapshot));h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(230.0,65.0),1.0);
     assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().contains("每周"))),"卡片必须显示已耗尽的套餐周期");
     assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="0%")),"套餐剩余额度应显示百分比");
 }
@@ -8558,7 +8558,7 @@ fn quota_acceptance_relay_key_only_response_shows_balance_unavailable(){
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     let snapshot=relay::parse_new_api(&serde_json::json!({"code":true,"data":{"object":"token_usage","unlimited_quota":true,"total_used":2}})).unwrap();
     h.app.quota.config.accounts=vec![Account{id:"relay".into(),provider:Provider::NewApi,alias:"测试站点".into(),source:"https://relay.example".into(),slot:None,enabled:true,pinned:true,channel:None}];
-    h.app.quota.config.selected="relay".into();h.app.quota.rows.insert("relay".into(),Ok(snapshot));h.app.show_page(6);h.hover(H::local(230.0,65.0),1.0);
+    h.app.quota.config.selected="relay".into();h.app.quota.rows.insert("relay".into(),Ok(snapshot));h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(230.0,65.0),1.0);
     assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="余额暂不可查询")));
     assert!(!h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().contains("不限额")||t.galley.text().contains("未设置限额"))));
 }
@@ -8571,7 +8571,7 @@ fn quota_acceptance_new_api_user_balance_is_visible(){
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     let snapshot=relay::parse_new_api_user(&serde_json::json!({"success":true,"data":{"quota":550000,"used_quota":1000000}}),&serde_json::json!({"success":true,"data":{"quota_per_unit":500000,"quota_display_type":"USD"}})).unwrap();
     h.app.quota.config.accounts=vec![Account{id:"relay-user".into(),provider:Provider::NewApi,alias:"测试站点".into(),source:"https://relay.example".into(),slot:None,enabled:true,pinned:true,channel:None}];
-    h.app.quota.config.selected="relay-user".into();h.app.quota.rows.insert("relay-user".into(),Ok(snapshot));h.app.show_page(6);h.hover(H::local(230.0,65.0),1.0);
+    h.app.quota.config.selected="relay-user".into();h.app.quota.rows.insert("relay-user".into(),Ok(snapshot));h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(230.0,65.0),1.0);
     assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="1.1 USD")));
     assert!(!h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="余额暂不可查询")));
 }
@@ -8634,7 +8634,7 @@ fn quota_acceptance_grouped_connections_preserve_saved_sources() {
     for provider in [Provider::ZCode,Provider::Glm,Provider::NewApi,Provider::OneApi,Provider::Sub2Api] {
         let mut h=H::new();h.app.settings_open=true;h.app.quota.provider=provider;h.app.quota.connect_open=true;
         let source=if provider.relay(){"https://relay.example/path"}else if provider==Provider::Glm{"global"}else{"fixture/credentials.json"};
-        let account=Account{id:"existing".into(),provider,alias:"原账号".into(),source:source.into(),slot:Some("existing-reference".into()),enabled:true,pinned:false};
+        let account=Account{id:"existing".into(),provider,alias:"原账号".into(),source:source.into(),slot:Some("existing-reference".into()),enabled:true,pinned:false,channel:None};
         h.app.quota.config.accounts=vec![account.clone()];h.app.quota.config.selected=account.id.clone();h.app.quota.connect_target=Some(account.id.clone());h.app.quota.source=source.into();
         for _ in 0..3{
             let output=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(780.0,850.0))),..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|h.app.quota_settings(ui));});h.shapes=output.shapes;
@@ -8719,7 +8719,7 @@ fn quota_acceptance_details_open_the_correct_account() {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     let s=relay::parse_sub2api(&serde_json::json!({"mode":"unrestricted","isValid":true,"unit":"USD","balance":0})).unwrap();
     let a=Account{id:"selected-relay".into(),provider:Provider::Sub2Api,alias:"原站点".into(),source:"https://relay.example".into(),slot:None,enabled:true,pinned:false,channel:None};
-    h.app.quota.config.accounts=vec![a.clone()];h.app.quota.config.selected=a.id.clone();h.app.quota.rows.insert(a.id.clone(),Ok(s));h.app.show_page(6);h.hover(H::local(230.0,65.0),1.0);
+    h.app.quota.config.accounts=vec![a.clone()];h.app.quota.config.selected=a.id.clone();h.app.quota.rows.insert(a.id.clone(),Ok(s));h.app.show_page(6);h.app.quota.detail_open=true;h.hover(H::local(230.0,65.0),1.0);
     h.click_text("明细 ›");assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,11);assert_eq!(h.app.quota.config.selected,a.id);
 }
 #[test]
@@ -8767,9 +8767,9 @@ fn quota_acceptance_gallery() {
     ];
     for (index,provider) in providers.into_iter().enumerate() {
         let mut h=H::new();h.app.settings.pet=false;
-        let a=Account{id:"preview".into(),provider,alias:provider.name().into(),source:if provider.relay(){"https://relay.example".into()}else{"cn".into()},slot:Some("synthetic-reference".into()),enabled:true,pinned:true};
+        let a=Account{id:"preview".into(),provider,alias:provider.name().into(),source:if provider.relay(){"https://relay.example".into()}else{"cn".into()},slot:Some("synthetic-reference".into()),enabled:true,pinned:true,channel:None};
         h.app.quota.config.accounts=vec![a.clone()];h.app.quota.config.selected=a.id.clone();h.app.quota.rows.insert(a.id,Ok(snapshots[index].clone()));
-        h.app.show_page(6);let mut raster=feature_raster();
+        h.app.show_page(6);h.app.quota.detail_open=true;let mut raster=feature_raster();
         shoot_feature(&mut h,&mut raster,&dest,&format!("island-{index}"),60,Some(H::local(240.0,65.0)),"2026-11-10");
     }
     for (group,indices) in [("plans",vec![0usize,1,2]),("relay",vec![3usize,4,5])] {
@@ -8878,4 +8878,34 @@ fn every_module_settings_tab_maps_to_its_page(){
         if let Some(page)=crate::extras::settings_tab_module(tab) {assert!(crate::app::PAGE_NAMES[page].chars().next()==titles[tab].chars().next(),"{} ↔ {}",titles[tab],crate::app::PAGE_NAMES[page]);}
     }
     pages.sort();assert_eq!(pages,(0..crate::app::PAGE_NAMES.len()).collect::<Vec<_>>(),"每个功能页面各有一个设置分页");
+}
+
+#[test]
+#[ignore="按需导出额度页「按渠道分组列表」的界面快照"]
+fn quota_list_preview(){
+    use crate::quota::{Account,Channel,Provider,Snapshot,Window};
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_QUOTA_PREVIEW").expect("需要 DAOZAI_QUOTA_PREVIEW 目录"));
+    std::fs::create_dir_all(&dest).unwrap();
+    let now=chrono::Utc::now().timestamp();
+    let mut h=H::new();h.app.settings.pet=false;
+    h.app.quota.config.accounts=vec![
+        Account{id:"codex-a".into(),provider:Provider::Codex,alias:"个人".into(),source:"a.json".into(),slot:None,enabled:true,pinned:true,channel:None},
+        Account{id:"codex-b".into(),provider:Provider::Codex,alias:"工作".into(),source:"b.json".into(),slot:None,enabled:true,pinned:true,channel:None},
+        Account{id:"claude".into(),provider:Provider::Claude,alias:"Claude 桌面版".into(),source:"c.json".into(),slot:None,enabled:true,pinned:true,channel:None},
+        Account{id:"magpie/workbuddy/u".into(),provider:Provider::Magpie,alias:"我".into(),source:Default::default(),slot:Some("u".into()),enabled:true,pinned:true,channel:Some(Channel{id:"workbuddy".into(),name:"WorkBuddy".into()})},
+        Account{id:"magpie/codearts/u".into(),provider:Provider::Magpie,alias:"团队".into(),source:Default::default(),slot:Some("u".into()),enabled:true,pinned:true,channel:Some(Channel{id:"codearts".into(),name:"华为云 CodeArts".into()})},
+    ];
+    h.app.quota.config.selected="codex-a".into();
+    h.app.quota.rows.insert("codex-a".into(),Ok(Snapshot{windows:vec![
+        Window{label:"5 小时".into(),seconds:Some(18000),remaining:72.0,reset:Some(now+7200),amount:None,caption:None},
+        Window{label:"本周".into(),seconds:Some(604800),remaining:45.0,reset:Some(now+200000),amount:None,caption:None}],at:now,..Default::default()}));
+    h.app.quota.rows.insert("codex-b".into(),Ok(Snapshot{plan:"plus".into(),windows:vec![Window{label:"5 小时".into(),seconds:Some(18000),remaining:0.0,reset:Some(now+1800),amount:None,caption:None}],at:now,..Default::default()}));
+    h.app.quota.rows.insert("claude".into(),Ok(Snapshot{plan:"pro".into(),windows:vec![Window{label:"本周".into(),seconds:Some(604800),remaining:27.0,reset:None,amount:None,caption:None}],at:now,..Default::default()}));
+    h.app.quota.rows.insert("magpie/workbuddy/u".into(),Ok(Snapshot{windows:vec![Window{label:"积分".into(),seconds:None,remaining:86.0,reset:Some(now+86400),amount:None,caption:Some("28560 / 33200".into())}],at:now,..Default::default()}));
+    h.app.quota.rows.insert("magpie/codearts/u".into(),Err("网关未响应".into()));
+    h.app.show_page(6);h.app.quota.detail_open=false;
+    let mut raster=feature_raster();
+    shoot_feature(&mut h,&mut raster,&dest,"quota-list",60,None,"2026-11-10");
+    shoot_feature(&mut h,&mut raster,&dest,"quota-list-hover",30,Some(H::local(200.0,72.0)),"2026-11-10");
 }

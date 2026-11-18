@@ -1567,6 +1567,7 @@ impl App {
             return;
         }
         self.notice=None;
+        if page==QUOTA_PAGE {self.quota.detail_open=false;}
         self.go(page,1.0);
         self.open=true; self.forced_open_until=self.t+4.0;
         self.w.tune(OPEN_W.0,OPEN_W.1);self.h.tune(OPEN_H.0,OPEN_H.1);
@@ -1686,6 +1687,7 @@ impl App {
     pub(crate) fn go(&mut self, page: usize, dir: f32) {
         if page == self.page || !self.settings.visible_pages[page] { return; }
         self.music_volume_open=false;
+        if page!=QUOTA_PAGE {self.quota.detail_open=false;}
         self.subpage=None;
         // 连点：上一段过渡还没结束时，以当前页为起点重新开始，位移速度保留。
         self.page_from = self.page;

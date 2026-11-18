@@ -513,7 +513,7 @@ fn fetch(agent:&ureq::Agent,account:&Account)->Result<Snapshot,(String,u64)>{
     }
     #[test] fn enabled_quota_groups_run_independently_and_reuse_inflight_workers(){
         use std::sync::{Arc,Mutex};
-        let account=|id:&str,provider,enabled|Account{id:id.into(),provider,alias:String::new(),source:PathBuf::new(),slot:None,enabled,pinned:false};
+        let account=|id:&str,provider,enabled|Account{id:id.into(),provider,alias:String::new(),source:PathBuf::new(),slot:None,enabled,pinned:false,channel:None};
         let(started,events)=mpsc::channel();let(release,blocked)=mpsc::channel();let blocked=Arc::new(Mutex::new(blocked));
         let run=move|_:&ureq::Agent,a:&Account|{started.send(a.id.clone()).unwrap();if a.id=="slow"{blocked.lock().unwrap().recv_timeout(Duration::from_secs(3)).unwrap();}Ok(Snapshot::default())};
         let slow=account("slow",Provider::NewApi,true);let fast=account("fast",Provider::OpenCodeGo,true);

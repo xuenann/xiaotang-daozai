@@ -4,6 +4,10 @@ use eframe::egui::{self,Color32};
 use std::collections::{HashMap,HashSet};
 use chrono::Datelike;
 
+/// 渠道分组列表的行高与分组标题高度。
+const ROW_H:f32=36.0;
+const HEAD_H:f32=18.0;
+
 const CLAUDE_LOCAL_NOTICE:&str="由于 Claude 对网络使用环境要求较高，岛仔不会使用登录凭证向 Claude 服务发送任何请求，只读取本机用量记录与缓存，自动显示其中的重置时间；缺少有效记录时，显示“重置时间未知”。";
 
 #[derive(Default)]
@@ -20,6 +24,10 @@ pub(crate) struct State {
     pub deepseek_connecting:Option<quota::deepseek::Connect>,pub deepseek_key:String,
     pub api_connecting:Option<quota::api::Connect>,pub api_key:String,
     pub detail_account:Option<String>,
+    /// 额度页当前是否停在这个账号的详情上；false 表示展示渠道分组列表。
+    pub detail_open:bool,
+    /// 需要滚动到的账号（从常驻栏点进来时用）。
+    pub scroll_to:Option<String>,
     pub kiro_connecting:Option<quota::kiro::Connect>,
     pub stale:HashMap<String,String>,
     pub gemini_connecting:Option<quota::gemini::Connect>,pub gemini_email:String,pub gemini_cookie:String,
@@ -204,6 +212,48 @@ fn channel_logo(c:&Card,channel:&str,x:f32,y:f32,size:f32){
 }
 fn logo_for(c:&Card,a:&Account,x:f32,y:f32,size:f32){
     if a.provider==Provider::Magpie{channel_logo(c,a.channel_id(),x,y,size);}else{logo(c,a.provider,x,y,size);}
+}
+/// 列表行左侧的小圆环：只画进度，不放标识，避免 20px 内糊成一团。
+fn mini_ring(c:&Card,snapshot:Option<&Snapshot>,cx:f32,cy:f32,r:f32,colors:[Color32;2]){
+    let windows=snapshot.map(Snapshot::rings).unwrap_or_default();
+    let dual=windows.len()>1;let start=-std::f32::consts::FRAC_PI_2;let stroke=if dual{2.4}else{3.0};
+    for i in 0..if dual{2}else{1}{
+        let radius=r-i as f32*(stroke+1.8);
+        match windows.get(i){
+            Some(w)=>{
+                c.ring(cx,cy,radius,stroke,crate::paint::mix(colors[i],Color32::BLACK,0.82));
+                if w.remaining>=100.0{c.ring(cx,cy,radius,stroke,colors[i]);}
+                else if w.remaining>0.0{c.arc(cx,cy,radius,start,start+std::f32::consts::TAU*w.remaining/100.0,stroke,colors[i]);}
+            }
+            None=>c.ring(cx,cy,radius,stroke,Color32::from_gray(44)),
+        }
+    }
+}
+/// 套餐名统一成短标签，"Free plan" 这类原样照搬会挤掉后面的额度。
+fn plan_label(raw:&str)->&str{
+    match raw{"free"|"Free plan"=>"Free","pro"|"prolite"|"pro_lite"|"Pro plan"=>"Pro","plus"|"Plus plan"=>"Plus","team"|"business"|"Team plan"=>"Team","enterprise"|"Enterprise plan"=>"Enterprise","default"|""=>"",other=>other}
+}
+/// 一行里的主数字：积分/点数优先写绝对值，纯周期额度写百分比。
+fn value(window:&quota::Window)->String{
+    match (&window.caption,&window.amount){(Some(caption),_)=>caption.clone(),(None,Some(amount))=>amount.full(),_=>format!("{:.0}%",window.remaining)}
+}
+fn secondary(window:Option<&quota::Window>)->Option<String>{
+    let w=window?;Some(format!("{} {}",w.label,value(w)))
+}
+/// 渠道分组列表的一行：先把要显示的数据取出来，绘制时不再借用配置。
+struct Row {id:String,alias:String,plan:String,snapshot:Option<Snapshot>,message:Option<String>,busy:bool,colors:[Color32;2],amount:String}
+/// 同一个渠道下的账号，顺序沿用配置里的账号顺序。
+struct Group {id:String,name:String,provider:Provider,magpie:bool,rows:Vec<Row>}
+fn offset_of(groups:&[Group],target:&str)->f32{
+    let mut y=0.0;
+    for group in groups{
+        y+=HEAD_H;
+        for row in &group.rows{
+            if row.id==target{return (y-HEAD_H).max(0.0);}
+            y+=ROW_H;
+        }
+    }
+    0.0
 }
 fn deepseek_badge_svg(skin:crate::model::Skin)->String{
     use crate::model::Skin;
@@ -449,16 +499,32 @@ impl App {
             let summary=snapshot.map(|s|s.rings().iter().map(|w|w.summary()).collect::<Vec<_>>().join(" · ")).unwrap_or_else(||if self.quota.busy.contains(&a.id){"正在更新".into()}else{"额度暂不可用".into()});
             if bar_tooltip(c.hit(x-14.0,1.0,28.0+extra,28.0,("quota-pin",&a.id)),format!("{} · {}\n{}",a.provider.name(),a.alias,summary)).clicked(){chosen=Some(a.id.clone());}
         }
-        if let Some(id)=chosen{self.quota.config.selected=id;self.quota.config.save();self.show_page(6);}
+        if let Some(id)=chosen{self.quota.scroll_to=Some(id.clone());self.quota.config.selected=id;self.quota.config.save();self.show_page(6);}
     }
     pub(crate) fn page_quota(&mut self,c:&Card){
         if c.hit(303.0,8.0,32.0,21.0,"quota-refresh").on_hover_text("刷新额度").clicked(){self.pending.push(Cmd::QuotaRefresh);}
         c.text(319.0,23.0,if self.quota.busy.is_empty(){"刷新"}else{"更新中"},10.5,W::Regular,theme::GRAY,H::Center);
-        let Some(selected)=self.quota.config.selected_index() else{
+        if self.quota.config.accounts.is_empty(){
             c.text(43.0,61.0,"还没有添加 AI 账号",13.0,W::Bold,theme::WHITE,H::Left);
             c.text(43.0,80.0,"连接 AI 账号，查看剩余额度",10.5,W::Regular,theme::GRAY,H::Left);
-            let(r,b)=crate::paint::capsule(c,43.0,92.0,94.0,24.0,"add-quota-account",theme::BTN,theme::BTN_HOVER);b.text(90.0,108.0,"添加账号",10.0,W::Semibold,theme::WHITE,H::Center);if r.clicked(){self.settings_tab=11;self.open_settings();}return;
-        };
+            let(r,b)=crate::paint::capsule(c,43.0,92.0,94.0,24.0,"add-quota-account",theme::BTN,theme::BTN_HOVER);b.text(90.0,108.0,"添加账号",10.0,W::Semibold,theme::WHITE,H::Center);if r.clicked(){self.settings_tab=11;self.open_settings();}
+            return;
+        }
+        // 主视图是按渠道分组的列表；点已选中的账号再进详情，返回按钮回到列表。
+        if self.quota.detail_open&&self.quota.config.selected_index().is_some(){
+            if c.hit(196.0,8.0,44.0,21.0,"quota-back").on_hover_text("返回渠道列表").clicked(){
+                self.quota.detail_open=false;
+            }else{
+                c.text(218.0,23.0,"‹ 列表",10.5,W::Regular,theme::GRAY,H::Center);
+                self.quota_detail_page(c);return;
+            }
+        }
+        self.quota.detail_open=false;
+        self.quota_channel_list(c);
+    }
+    /// 单个账号的详情：同心环、各周期剩余与重置时间，按厂商分别排布。
+    fn quota_detail_page(&mut self,c:&Card){
+        let Some(selected)=self.quota.config.selected_index() else {return;};
         let indices=self.quota.config.ordered_indices(false);
         let pos=indices.iter().position(|i|*i==selected).unwrap_or(0);let start=pos/3*3;let mut picked=None;
         if indices.len()>3{for (x,offset,label)in [(42.0,-1isize,"‹"),(357.0,1,"›")]{if c.hit(x-7.0,30.0,18.0,19.0,("quota-account-next",offset)).clicked(){picked=Some(indices[(pos as isize+offset).rem_euclid(indices.len() as isize) as usize]);}c.text(x+2.0,44.0,label,13.0,W::Regular,theme::GRAY,H::Center);}}
@@ -589,6 +655,88 @@ impl App {
                 }
             }
         }else{let message=if self.quota.busy.contains(&a.id){"正在更新额度…"}else{result.and_then(|r|r.as_ref().err()).map(String::as_str).unwrap_or("等待更新额度")};for(i,line)in c.wrap(message,11.0,W::Regular,197.0,2).iter().enumerate(){c.text(157.0,103.0+i as f32*17.0,line,11.0,W::Regular,theme::GRAY,H::Left);}}
+    }
+    /// 额度页主视图：按渠道分组的账号列表，一眼看到每个账号的剩余与重置时间。
+    fn quota_channel_list(&mut self,c:&Card){
+        let mut groups:Vec<Group>=Vec::new();
+        for index in self.quota.config.visible_indices(){
+            let a=&self.quota.config.accounts[index];
+            let result=self.quota.rows.get(&a.id);
+            let snapshot=result.and_then(|r|r.as_ref().ok()).cloned();
+            let message=result.and_then(|r|r.as_ref().err()).cloned();
+            let busy=self.quota.busy.contains(&a.id);
+            // 余额类（WorkBuddy 积分、DeepSeek 余额、中转站）的主数字不在窗口里，单独取。
+            let amount=self.quota.balance_text(&a.id)
+                .or_else(||snapshot.as_ref().and_then(|s|s.rings().first().map(|w|value(w))))
+                .unwrap_or_else(||"——".into());
+            let row=Row{id:a.id.clone(),alias:a.alias.clone(),plan:plan_label(snapshot.as_ref().map(|s|s.plan.as_str()).unwrap_or_default()).to_owned(),snapshot,message,busy,colors:accent_colors(&self.quota.config,a),amount};
+            let id=a.channel_id().to_owned();
+            match groups.iter_mut().find(|group|group.id==id){
+                Some(group)=>group.rows.push(row),
+                None=>groups.push(Group{name:a.channel_name().to_owned(),provider:a.provider,magpie:a.channel.is_some(),id,rows:vec![row]}),
+            }
+        }
+        if groups.is_empty(){
+            c.text(43.0,61.0,"渠道都已隐藏",13.0,W::Bold,theme::WHITE,H::Left);
+            c.text(43.0,80.0,"在设置 → AI 额度 → 渠道里勾选要显示的渠道",10.5,W::Regular,theme::GRAY,H::Left);
+            let(r,b)=crate::paint::capsule(c,43.0,92.0,94.0,24.0,"quota-setup-channels",theme::BTN,theme::BTN_HOVER);b.text(90.0,108.0,"去设置",10.0,W::Semibold,theme::WHITE,H::Center);if r.clicked(){self.settings_tab=11;self.open_settings();}
+            return;
+        }
+        let total:usize=groups.iter().map(|group|group.rows.len()).sum();
+        // 留 18 点底边距：两个渠道 3 个账号正好放得下，再多才出现滚动条。
+        let view=(self.expanded_height()-36.0-18.0).max(ROW_H);
+        let selected=self.quota.config.selected.clone();
+        let mut clicked=None;
+        let mut content=egui::Ui::new(c.ui.ctx().clone(),egui::Id::new(("quota-list",c.live)),
+            egui::UiBuilder::new().max_rect(c.rect(36.0,36.0,347.0,view)).layer_id(c.painter.layer_id()).style(c.ui.style().clone()));
+        content.set_clip_rect(c.rect(36.0,36.0,347.0,view).intersect(c.painter.clip_rect()));
+        content.set_opacity(c.painter.opacity());if !c.live{content.disable();}
+        content.spacing_mut().item_spacing.y=0.0;
+        content.spacing_mut().scroll.floating=false;
+        content.spacing_mut().scroll.bar_width=3.0*c.s;
+        content.visuals_mut().widgets.inactive.bg_fill=Color32::from_gray(80);
+        let mut scroll=egui::ScrollArea::vertical().id_salt("quota-list-scroll").max_height(view*c.s).auto_shrink([false,false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
+        if let Some(target)=self.quota.scroll_to.take(){if total>3{scroll=scroll.vertical_scroll_offset(offset_of(&groups,&target)*c.s);}}
+        let now=chrono::Local::now();
+        scroll.show(&mut content,|ui|{
+            for group in &groups{
+                let (rect,_)=ui.allocate_exact_size(egui::vec2(343.0*c.s,HEAD_H*c.s),egui::Sense::hover());
+                let mut head=Card::new(ui,rect.min,ui.clip_rect());head.s=c.s;head.live=c.live;
+                if group.magpie{channel_logo(&head,&group.id,12.0,9.0,12.0);}else{logo(&head,group.provider,12.0,9.0,12.0);}
+                head.text(22.0,13.0,&group.name,11.5,W::Semibold,theme::WHITE,H::Left);
+                let count=format!("{} 个账号",group.rows.len());
+                head.text(341.0,13.0,&count,10.0,W::Regular,theme::DIM,H::Right);
+                for item in &group.rows{
+                    let (rect,_)=ui.allocate_exact_size(egui::vec2(343.0*c.s,ROW_H*c.s),egui::Sense::hover());
+                    let mut row=Card::new(ui,rect.min,ui.clip_rect());row.s=c.s;row.live=c.live;
+                    let hit=row.hit(0.0,0.0,343.0,ROW_H-1.0,("quota-row",&item.id));
+                    let on=item.id==selected;
+                    if hit.hovered()||on{row.fill(0.0,0.0,343.0,ROW_H-1.0,6.0,Color32::from_gray(if hit.hovered(){27}else{17}));}
+                    if on{row.fill(0.0,7.0,2.0,22.0,1.0,item.colors[0]);}
+                    let windows=item.snapshot.as_ref().map(Snapshot::rings).unwrap_or_default();
+                    mini_ring(&row,item.snapshot.as_ref(),16.0,18.0,10.0,item.colors);
+                    let alias=row.fit(&item.alias,11.5,W::Semibold,150.0);
+                    let alias_width=row.text_w(&alias,11.5,W::Semibold);
+                    row.text(32.0,15.0,&alias,11.5,W::Semibold,theme::WHITE,H::Left);
+                    if !item.plan.is_empty(){row.text(32.0+alias_width+6.0,15.0,&row.fit(&item.plan,9.5,W::Regular,58.0),9.5,W::Regular,theme::DIM,H::Left);}
+                    row.text(341.0,15.0,&item.amount,12.5,W::Semibold,if item.amount=="——"{theme::DIM}else{theme::WHITE},H::Right);
+                    let left=if let Some(w)=windows.first(){reset_text(w.reset,&now)}else if item.busy{"正在更新…".into()}else{item.message.clone().unwrap_or_else(||"等待更新".into())};
+                    row.text(32.0,30.0,&row.fit(&left,10.0,W::Regular,196.0),10.0,W::Regular,theme::DIM,H::Left);
+                    // 第二行右侧：有第二个周期就报它，否则标出当前数字是什么额度（积分／点数）。
+                    let second=secondary(windows.get(1).copied()).or_else(||windows.first().filter(|w|w.caption.is_some()).map(|w|w.label.clone()));
+                    if let Some(second)=second{
+                        row.text(341.0,30.0,&row.fit(&second,10.0,W::Regular,108.0),10.0,W::Regular,theme::GRAY,H::Right);
+                    }
+                    // 行内已经写了额度与重置时间，提示只补一句交互说明，避免大段文字盖住列表。
+                    let tip="点一次设为当前账号，再点一次查看详情".to_owned();
+                    if hit.on_hover_text(tip).clicked(){clicked=Some(item.id.clone());}
+                }
+            }
+        });
+        if let Some(id)=clicked{
+            if self.quota.config.selected==id{self.quota.detail_open=true;}
+            else{self.quota.config.selected=id;self.quota.config.save();}
+        }
     }
     fn quota_open_connection(&mut self,id:Option<String>){
         if self.quota.kiro_connecting.is_some()||self.quota.api_connecting.is_some()||self.quota.workbuddy_connecting.is_some()||self.quota.deepseek_connecting.is_some()||self.quota.gemini_connecting.is_some()||self.quota.doubao_connecting.is_some()||self.quota.login.is_some(){self.quota.connect_open=true;return;}

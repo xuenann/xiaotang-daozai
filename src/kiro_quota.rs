@@ -258,7 +258,7 @@ mod tests{
         assert!(owner(&json!({"clientIdHash":"same-client","profileArn":"shared-profile"})).is_err());
     }
     fn payload()->Value{json!({"userInfo":{"userId":"test-user"},"usageBreakdownList":[{"resourceType":"CREDIT","usageLimitWithPrecision":1000.0,"currentUsageWithPrecision":100.0,"nextDateReset":4102444800_i64}]})}
-    fn account(slot:Option<String>)->Account{Account{id:"kiro-test".into(),provider:Provider::Kiro,alias:"工作账号".into(),source:"old.json".into(),slot,enabled:true,pinned:true}}
+    fn account(slot:Option<String>)->Account{Account{id:"kiro-test".into(),provider:Provider::Kiro,alias:"工作账号".into(),source:"old.json".into(),slot,enabled:true,pinned:true,channel:None}}
     #[test]fn regions_and_headers_reject_ambiguous_or_untrusted_input(){
         for region in ["us-east-1.amazonaws.com.attacker.invalid/","us-east-1@attacker.invalid","eu-central-1?x=1","us-west-2"]{assert!(login(&json!({"accessToken":"fake","region":region})).is_err());}
         assert!(login(&json!({"accessToken":"fake","profileArn":"arn:aws:codewhisperer:eu-central-1:1:profile/a","region":"us-east-1"})).is_err());

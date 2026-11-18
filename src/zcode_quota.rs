@@ -237,7 +237,7 @@ mod tests{
             "account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:synthetic-customer:api-key":system_sealed("synthetic-coding-key",&key)}).to_string();
         std::fs::write(&path,&raw).unwrap();
         let mut config=super::super::Config::default();
-        for provider in [super::super::Provider::Glm,super::super::Provider::Codex]{config.accounts.push(Account{id:provider.name().into(),provider,alias:"保留备注".into(),source:"synthetic-source".into(),slot:Some("synthetic-slot".into()),enabled:false,pinned:true});}
+        for provider in [super::super::Provider::Glm,super::super::Provider::Codex]{config.accounts.push(Account{id:provider.name().into(),provider,alias:"保留备注".into(),source:"synthetic-source".into(),slot:Some("synthetic-slot".into()),enabled:false,pinned:true,channel:None});}
         config.selected="GLM".into();let before=config.clone();
         add(&mut config,&path,"").unwrap();add(&mut config,&path,"").unwrap();
         assert_eq!(&config.accounts[..2],before.accounts.as_slice());assert_eq!(config.selected,before.selected);assert_eq!(config.accounts.len(),3);
