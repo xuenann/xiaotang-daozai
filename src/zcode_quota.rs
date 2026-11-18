@@ -100,7 +100,7 @@ pub(super) fn coding(v:&Value)->Result<Snapshot,String>{
         let kind=row["type"].as_str().unwrap_or_default();
         let label=if kind=="TIME_LIMIT"{"工具调用".into()}else{super::cadence(seconds)};
         let reset=row["nextResetTime"].as_i64().filter(|x|*x>0).map(|x|if x>10_000_000_000{x/1000}else{x});
-        let window=Window{label,seconds,remaining:(100.0-used) as f32,reset,amount:None};
+        let window=Window{label,seconds,remaining:(100.0-used) as f32,reset,amount:None,caption:None};
         match kind{"TOKENS_LIMIT"|"CREDIT_LIMIT"=>snapshot.windows.push(window),"TIME_LIMIT"=>snapshot.extra.push(window),_=>{}}
     }
     if snapshot.windows.is_empty(){std::mem::swap(&mut snapshot.windows,&mut snapshot.extra);}

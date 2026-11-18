@@ -110,7 +110,7 @@ impl Config {
         let alias=if alias.trim().is_empty(){format!("{} · 账号 {}",provider.name(),next)}else{alias.trim().to_owned()};
         let id=format!("{}-{}",provider.name(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
         let pinned=self.accounts.is_empty();if pinned{self.selected=id.clone();}
-        self.accounts.push(Account{id,provider,alias,source:path,slot:None,enabled:true,pinned});Ok(())
+        self.accounts.push(Account{id,provider,alias,source:path,slot:None,enabled:true,pinned,channel:None});Ok(())
     }
     pub(crate) fn connect_grok(&mut self,slot:String,alias:String){
         if let Some(a)=self.accounts.iter_mut().find(|a|a.provider==Provider::GrokBot && a.slot.as_deref()==Some(&slot)){
@@ -118,21 +118,21 @@ impl Config {
         }
         let id=format!("GrokBot-{slot}");let pinned=self.pinned_indices().len()<3;
         let alias=if alias.trim().is_empty(){format!("Grok Bot · 账号 {}",self.accounts.iter().filter(|a|a.provider==Provider::GrokBot).count()+1)}else{alias};
-        self.selected=id.clone();self.accounts.push(Account{id,provider:Provider::GrokBot,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned});
+        self.selected=id.clone();self.accounts.push(Account{id,provider:Provider::GrokBot,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned,channel:None});
     }
     pub(crate) fn connect_workbuddy(&mut self,slot:String,alias:String)->String{
         if let Some(a)=self.accounts.iter_mut().find(|a|a.provider==Provider::WorkBuddy && a.slot.as_deref()==Some(&slot)){
             a.enabled=true;if !alias.trim().is_empty(){a.alias=alias;}self.selected=a.id.clone();return a.id.clone();
         }
         let id=format!("WorkBuddy-{slot}");let pinned=true;
-        self.selected=id.clone();self.accounts.push(Account{id:id.clone(),provider:Provider::WorkBuddy,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned});id
+        self.selected=id.clone();self.accounts.push(Account{id:id.clone(),provider:Provider::WorkBuddy,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned,channel:None});id
     }
     pub(crate) fn connect_gemini(&mut self,slot:String,alias:String)->String{
         if let Some(a)=self.accounts.iter_mut().find(|a|a.provider==Provider::Gemini && a.slot.as_deref()==Some(&slot)){
             a.enabled=true;if !alias.trim().is_empty(){a.alias=alias;}self.selected=a.id.clone();return a.id.clone();
         }
         let id=format!("Gemini-{slot}");let pinned=self.pinned_indices().len()<3;
-        self.selected=id.clone();self.accounts.push(Account{id:id.clone(),provider:Provider::Gemini,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned});id
+        self.selected=id.clone();self.accounts.push(Account{id:id.clone(),provider:Provider::Gemini,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned,channel:None});id
     }
     pub(crate) fn import_grok(&mut self,path:&Path,alias:&str)->Result<usize,String>{
         let profiles=grok::profiles(path)?;let path=fs::canonicalize(path).unwrap_or_else(|_|path.to_owned());let mut added=0;
@@ -140,7 +140,7 @@ impl Config {
             if self.accounts.iter().any(|a|a.provider==Provider::GrokBot && a.slot.as_deref()==Some(&profile.slot)){continue;}
             let id=format!("GrokBot-{}",profile.slot);let pinned=self.pinned_indices().len()<3;if self.accounts.is_empty(){self.selected=id.clone();}
             let label=if alias.trim().is_empty(){profile.label}else{format!("{alias} · {}",added+1)};
-            self.accounts.push(Account{id,provider:Provider::GrokBot,alias:label,source:path.clone(),slot:Some(profile.slot),enabled:true,pinned});added+=1;
+            self.accounts.push(Account{id,provider:Provider::GrokBot,alias:label,source:path.clone(),slot:Some(profile.slot),enabled:true,pinned,channel:None});added+=1;
         }
         Ok(added)
     }
@@ -153,7 +153,7 @@ impl Config {
             if let Some(existing)=self.accounts.iter_mut().find(|a|a.provider==Provider::Claude&&a.slot.is_none()&&claude::local_source(&a.source)==path){existing.source=path.clone();existing.slot=Some(profile.slot);continue;}
             let id=format!("ClaudeLocal-{}",profile.slot);let pinned=self.accounts.is_empty();if pinned{self.selected=id.clone();}
             let label=if alias.trim().is_empty(){profile.label}else{alias.trim().to_owned()};
-            self.accounts.push(Account{id,provider:Provider::Claude,alias:label,source:path.clone(),slot:Some(profile.slot),enabled:true,pinned});added+=1;
+            self.accounts.push(Account{id,provider:Provider::Claude,alias:label,source:path.clone(),slot:Some(profile.slot),enabled:true,pinned,channel:None});added+=1;
         }
         Ok(added)
     }

@@ -94,7 +94,7 @@ fn parse(value: &Value) -> Result<Vec<Entry>, String> {
 fn one(window: &Value, now: i64) -> Option<Window> {
     let remaining = number(&window["remaining"]).or_else(|| number(&window["used"]).map(|used| 100.0 - used))?;
     let reset = super::reset(&window["resetsAt"]);
-    Some(Window { label: label(window["name"].as_str().unwrap_or_default()), seconds: reset.map(|at| (at - now).max(0)), remaining: remaining.clamp(0.0, 100.0) as f32, reset, caption: amount(window) })
+    Some(Window { label: label(window["name"].as_str().unwrap_or_default()), seconds: reset.map(|at| (at - now).max(0)), remaining: remaining.clamp(0.0, 100.0) as f32, reset, caption: amount(window) ,amount:None})
 }
 
 fn label(name: &str) -> String {

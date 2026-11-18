@@ -825,8 +825,8 @@ fn quota_sig(enabled:bool,config:&daozai::quota::Config)->(bool,Vec<daozai::quot
 fn quota_sig_matches(known:&(bool,Vec<daozai::quota::Account>),enabled:bool,config:&daozai::quota::Config)->bool{
     known.0==enabled && known.1.len()==config.accounts.len() && known.1.iter().zip(&config.accounts).all(|(known,current)|{
         // 不用 `..`：账号新增字段时这里会编译失败，提醒决定新字段是否需要重新查询。
-        let daozai::quota::Account{id,provider,alias:_,source,slot,enabled,pinned:_}=current;
-        known.id==*id && known.provider==*provider && known.source==*source && known.slot==*slot && known.enabled==*enabled
+        let daozai::quota::Account{id,provider,alias:_,source,slot,enabled,pinned:_,channel}=current;
+        known.id==*id && known.provider==*provider && known.source==*source && known.slot==*slot && known.enabled==*enabled && known.channel==*channel
     })
 }
 

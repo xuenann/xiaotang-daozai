@@ -207,7 +207,7 @@ impl Validated {
         } else {
             let id = format!("Doubao-{slot}"); let pinned = candidate.pinned_indices().len() < 3;
             candidate.accounts.push(Account { id: id.clone(), provider: Provider::Doubao, alias: label,
-                source: PathBuf::new(), slot: Some(slot.clone()), enabled: true, pinned }); id
+                source: PathBuf::new(), slot: Some(slot.clone()), enabled: true, pinned ,channel:None}); id
         };
         candidate.selected = id.clone();
         save(&slot, &self.header)?;

@@ -125,7 +125,7 @@ pub(crate) fn apply_connection(config:&mut Config,target:Option<&Account>,connec
         let a=&mut config.accounts[index];a.source=connected.source.clone();a.slot=Some(slot);a.enabled=true;if !connected.label.trim().is_empty(){a.alias=connected.label.trim().into();}a.id.clone()
     }else{
         let id=format!("Kiro-{slot}");let pinned=config.accounts.is_empty();
-        config.accounts.push(Account{id:id.clone(),provider:Provider::Kiro,alias:if connected.label.trim().is_empty(){"Kiro".into()}else{connected.label.trim().into()},source:connected.source.clone(),slot:Some(slot),enabled:true,pinned});id
+        config.accounts.push(Account{id:id.clone(),provider:Provider::Kiro,alias:if connected.label.trim().is_empty(){"Kiro".into()}else{connected.label.trim().into()},source:connected.source.clone(),slot:Some(slot),enabled:true,pinned,channel:None});id
     };config.selected=id.clone();Ok(id)
 }
 fn timestamp(v:&Value)->Option<i64>{
